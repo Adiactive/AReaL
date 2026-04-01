@@ -44,7 +44,7 @@ def preprocess_packed_seqs_context_parallel(
     if cp_size <= 1:
         return input_ids.unsqueeze(0), packed_seq_params
 
-    shape = (input_lens.sum().item() // cp_size,)
+    shape = (input_lens.sum().item() // cp_size,) + input_ids.shape[1:]
     splitted = torch.zeros(shape, dtype=input_ids.dtype, device=input_ids.device)
     for i in range(batch_size):
         seqlen = input_lens[i] // cp_size
@@ -134,15 +134,23 @@ def packed_context_parallel_forward(
     tree_triton_data = input_.get("tree_triton_data", None)
     packed_seq_params = None
 
+    pixel_values = input_.get("pixel_values", None)
+    image_grid_thw = input_.get("image_grid_thw", None)
+    video_grid_thw = input_.get("video_grid_thw", None)
+    pixel_values_videos = input_.get("pixel_values_videos", None)
+
+    is_vision = image_grid_thw is not None or pixel_values is not None
+
     if cu_seqlens is not None:
         if attention_mask is not None or tree_triton_data is not None:
             raise ValueError(
                 "Attention mask should be None when using packed sequences."
             )
-        input_ids, packed_seq_params = preprocess_packed_seqs_context_parallel(
-            input_ids, cu_seqlens
-        )
-        input_ids = input_ids.contiguous()
+        if not is_vision:
+            input_ids, packed_seq_params = preprocess_packed_seqs_context_parallel(
+                input_ids, cu_seqlens
+            )
+            input_ids = input_ids.contiguous()
 
     # Pass tree_triton_data as attention_mask if present (for Triton tree attention)
     # Otherwise use the attention_mask from input (could be dense tensor for flex attention)
@@ -151,11 +159,25 @@ def packed_context_parallel_forward(
     )
 
     try:
+        kwargs = {}
+        if is_vision:
+            if pixel_values is not None:
+                kwargs["pixel_values"] = pixel_values
+            if image_grid_thw is not None:
+                kwargs["image_grid_thw"] = image_grid_thw
+            if video_grid_thw is not None:
+                kwargs["video_grid_thw"] = video_grid_thw
+            if pixel_values_videos is not None:
+                kwargs["pixel_values_videos"] = pixel_values_videos
+            if cu_seqlens is not None:
+                kwargs["cu_seqlens"] = cu_seqlens
+
         output = model(
             input_ids=input_ids,
             attention_mask=final_attention_mask,
             position_ids=position_ids,
             packed_seq_params=packed_seq_params,
+            **kwargs
         )
     except Exception as e:
         raise RuntimeError(

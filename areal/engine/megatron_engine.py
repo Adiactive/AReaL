@@ -238,29 +238,44 @@ class MegatronEngine(TrainEngine):
 
         self.tokenizer = load_hf_tokenizer(self.config.path)
 
-        with patch_bridge_for_tree_training(self.enable_tree_training):
-            self.bridge = mbridge.AutoBridge.from_pretrained(
-                self.config.path, trust_remote_code=True
-            )
-            self.bridge.dtype = self.dtype
-            # Set gradient checkpointing options
-            if self.config.gradient_checkpointing:
-                self.bridge.set_extra_args(
-                    recompute_granularity=self.mcore_config.recompute_granularity,
-                    recompute_method=self.mcore_config.recompute_method,
-                    recompute_num_layers=self.mcore_config.recompute_num_layers,
-                    distribute_saved_activations=self.mcore_config.distribute_saved_activations,
-                    recompute_modules=self.mcore_config.recompute_modules,
+        from transformers import AutoConfig
+        from areal.engine.core.model import is_valid_vision_model
+        temp_hf_config = AutoConfig.from_pretrained(self.config.path, trust_remote_code=True)
+        self.is_vision_model = is_valid_vision_model(temp_hf_config.model_type)
+
+        if not self.is_vision_model:
+            with patch_bridge_for_tree_training(self.enable_tree_training):
+                self.bridge = mbridge.AutoBridge.from_pretrained(
+                    self.config.path, trust_remote_code=True
+                )
+                self.bridge.dtype = self.dtype
+                # Set gradient checkpointing options
+                if self.config.gradient_checkpointing:
+                    self.bridge.set_extra_args(
+                        recompute_granularity=self.mcore_config.recompute_granularity,
+                        recompute_method=self.mcore_config.recompute_method,
+                        recompute_num_layers=self.mcore_config.recompute_num_layers,
+                        distribute_saved_activations=self.mcore_config.distribute_saved_activations,
+                        recompute_modules=self.mcore_config.recompute_modules,
+                    )
+
+                self.logger.info(
+                    "Using mbridge to create models and hf model save/load in MegatronEngine."
                 )
 
+                self.hf_config, self.tf_config = make_hf_and_mcore_config(
+                    self.config.path, dtype=self.dtype, bridge=self.bridge
+                )
+        else:
+            self.bridge = None
             self.logger.info(
-                "Using mbridge to create models and hf model save/load in MegatronEngine."
+                "Vision model detected, not using mbridge to create models in MegatronEngine."
+            )
+            self.hf_config, self.tf_config = make_hf_and_mcore_config(
+                self.config.path, dtype=self.dtype, bridge=None
             )
 
-            self.hf_config, self.tf_config = make_hf_and_mcore_config(
-                self.config.path, dtype=self.dtype, bridge=self.bridge
-            )
-            self.tf_config = configure_pipeline_layer_splits(
+        self.tf_config = configure_pipeline_layer_splits(
                 self.parallel_strategy, self.hf_config, self.tf_config
             )
 
@@ -1486,6 +1501,42 @@ class MegatronEngine(TrainEngine):
             mb["max_seqlen"] = int(mb["max_seqlen"])
         for mb in mb_list.padded_mbs:
             mb["max_seqlen"] = int(mb["max_seqlen"])
+
+        for mb, padded_mb in zip(mb_list.mbs, mb_list.padded_mbs):
+            if "multi_modal_input" in mb:
+                image_grid_thw_list = [
+                    item["image_grid_thw"]
+                    for item in mb["multi_modal_input"]
+                    if "image_grid_thw" in item
+                ]
+                if image_grid_thw_list:
+                    mb["image_grid_thw"] = torch.cat(image_grid_thw_list, dim=0)
+                    padded_mb["image_grid_thw"] = torch.cat(image_grid_thw_list, dim=0)
+                pixel_values_list = [
+                    item["pixel_values"]
+                    for item in mb["multi_modal_input"]
+                    if "pixel_values" in item
+                ]
+                if pixel_values_list:
+                    mb["pixel_values"] = torch.cat(pixel_values_list, dim=0)
+                    padded_mb["pixel_values"] = torch.cat(pixel_values_list, dim=0)
+                video_grid_thw_list = [
+                    item["video_grid_thw"]
+                    for item in mb["multi_modal_input"]
+                    if "video_grid_thw" in item
+                ]
+                if video_grid_thw_list:
+                    mb["video_grid_thw"] = torch.cat(video_grid_thw_list, dim=0)
+                    padded_mb["video_grid_thw"] = torch.cat(video_grid_thw_list, dim=0)
+                pixel_values_videos_list = [
+                    item["pixel_values_videos"]
+                    for item in mb["multi_modal_input"]
+                    if "pixel_values_videos" in item
+                ]
+                if pixel_values_videos_list:
+                    mb["pixel_values_videos"] = torch.cat(pixel_values_videos_list, dim=0)
+                    padded_mb["pixel_values_videos"] = torch.cat(pixel_values_videos_list, dim=0)
+
         return mb_list
 
     def _compute_logprobs_and_loss(

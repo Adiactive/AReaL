@@ -18,6 +18,10 @@ from areal.models.mcore.qwen3 import (
     hf_to_mcore_config_qwen3_dense,
     make_mcore_layer_specs_qwen3_dense,
 )
+from areal.models.mcore.qwen2_5_vl_config import (
+    hf_to_mcore_config_qwen2_5_vl,
+    make_mcore_layer_specs_qwen2_5_vl,
+)
 from areal.utils import logging
 
 logger = logging.getLogger("MCoreRegistry")
@@ -121,6 +125,8 @@ def make_hf_and_mcore_config(
             "BailingHybridForCausalLM",
         ):
             return hf_config, hf_to_mcore_config_bailing_moe(hf_config, dtype)
+        elif architecture in ("Qwen2_5_VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"):
+            return hf_config, hf_to_mcore_config_qwen2_5_vl(hf_config, dtype)
         else:
             raise ValueError(
                 f"Architecture not registered for config conversion: {architecture}."
@@ -138,6 +144,8 @@ def make_mcore_layer_specs(hf_config: PretrainedConfig, tf_config: TransformerCo
         "BailingHybridForCausalLM",
     ):
         return make_mcore_layer_specs_bailing_moe(tf_config, hf_config, use_te=True)
+    elif architecture in ("Qwen2_5_VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"):
+        return make_mcore_layer_specs_qwen2_5_vl(tf_config, use_te=True)
     else:
         raise ValueError(
             f"Architecture not registered for config conversion: {architecture}."
@@ -185,30 +193,82 @@ def make_mcore_model(
         rope_scaling_args = {}
         if hf_config.rope_scaling is not None:
             if hf_config.rope_scaling["type"] != "linear":
-                raise NotImplementedError(
-                    f"Rope scaling type {hf_config.rope_scaling['type']} not supported yet."
-                )
-            rope_scaling_args["seq_len_interpolation_factor"] = hf_config.rope_scaling[
-                "factor"
-            ]
+                if hf_config.rope_scaling["type"] != "mrope":
+                    raise NotImplementedError(
+                        f"Rope scaling type {hf_config.rope_scaling['type']} not supported yet."
+                    )
+            if "factor" in hf_config.rope_scaling:
+                rope_scaling_args["seq_len_interpolation_factor"] = hf_config.rope_scaling[
+                    "factor"
+                ]
 
-        model = GPTModel(
-            config=tf_config,
-            transformer_layer_spec=transformer_layer_spec,
-            vocab_size=hf_config.vocab_size,
-            max_sequence_length=hf_config.max_position_embeddings,
-            pre_process=True,  # TODO: pipeline parallel
-            post_process=True,  # TODO: pipeline parallel
-            share_embeddings_and_output_weights=False,  # TODO: implement share output weights
-            position_embedding_type="rope",
-            rotary_base=hf_config.rope_theta,
-            **rope_scaling_args,
-            # vp_stage=None TODO: virtual pipeline parallel
-        )
+        assert len(hf_config.architectures) == 1
+        architecture = hf_config.architectures[0]
+
+        if architecture in ("Qwen2_5_VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"):
+            from copy import deepcopy
+            from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TERowParallelLinear
+            from megatron.core.models.gpt.moe_module_specs import MLPSubmodules
+            from megatron.core.models.vision.vit_layer_specs import get_vit_layer_with_transformer_engine_spec
+            from areal.models.mcore.qwen2_5_vl.model import Qwen2_5VLModel
+            from areal.models.mcore.qwen2_5_vl.vision_config import get_vision_model_config
+            from areal.models.mcore.qwen2_5_vl.vision_model import get_vision_projection_config
+
+            vision_transformer_config = get_vision_model_config(deepcopy(tf_config))
+            vision_transformer_config.pipeline_model_parallel_size = 1
+            vision_transformer_config.first_pipeline_num_layers = None
+
+            spatial_merge_size = getattr(hf_config.vision_config, "spatial_merge_size", 2)
+            vision_projection_config = get_vision_projection_config(
+                deepcopy(tf_config),
+                vision_transformer_config.hidden_size,
+                spatial_merge_size=spatial_merge_size,
+            )
+            vision_projection_layer_spec = MLPSubmodules(
+                linear_fc1=TEColumnParallelLinear,
+                linear_fc2=TERowParallelLinear,
+            )
+            vision_transformer_layer_spec = get_vit_layer_with_transformer_engine_spec()
+
+            model = Qwen2_5VLModel(
+                language_transformer_config=tf_config,
+                language_transformer_layer_spec=transformer_layer_spec,
+                language_vocab_size=hf_config.vocab_size,
+                language_max_sequence_length=hf_config.max_position_embeddings,
+                vision_transformer_config=vision_transformer_config,
+                vision_transformer_layer_spec=vision_transformer_layer_spec,
+                vision_projection_config=vision_projection_config,
+                vision_projection_layer_spec=vision_projection_layer_spec,
+                vision_projection_type="mlp",
+                pre_process=True,
+                post_process=True,
+            )
+            
+            # Monkey patch output_layer onto model.language_model to match _replace_output_layer_with_value_head expectation
+            if not hasattr(model, "output_layer") and hasattr(model.language_model, "output_layer"):
+                model.output_layer = model.language_model.output_layer
+                model.vocab_size = model.language_model.vocab_size
+        else:
+            model = GPTModel(
+                config=tf_config,
+                transformer_layer_spec=transformer_layer_spec,
+                vocab_size=hf_config.vocab_size,
+                max_sequence_length=hf_config.max_position_embeddings,
+                pre_process=True,  # TODO: pipeline parallel
+                post_process=True,  # TODO: pipeline parallel
+                share_embeddings_and_output_weights=False,  # TODO: implement share output weights
+                position_embedding_type="rope",
+                rotary_base=hf_config.rope_theta,
+                **rope_scaling_args,
+                # vp_stage=None TODO: virtual pipeline parallel
+            )
 
         # Replace output_layer with ValueHead for critic models
         if is_critic:
-            _replace_output_layer_with_value_head(model, tf_config)
+            if hasattr(model, "language_model"):
+                _replace_output_layer_with_value_head(model.language_model, tf_config)
+            else:
+                _replace_output_layer_with_value_head(model, tf_config)
 
         if mcore_config.wrap_with_ddp:
             ddp_config = MCoreDDPConfig(**dataclasses.asdict(mcore_config.ddp))
