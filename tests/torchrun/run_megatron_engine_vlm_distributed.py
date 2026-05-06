@@ -19,7 +19,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-import torch
+try:
+    import mindspeed.megatron_adaptor  # noqa: F401  # must precede mbridge on NPU
+except ImportError:
+    pass
+
+import torch  # noqa: I001
 import torch.distributed as dist
 
 from areal.api import FinetuneSpec, SaveLoadMeta
@@ -31,6 +36,7 @@ from areal.api.cli_args import (
     TrainEngineConfig,
 )
 from areal.engine import MegatronEngine
+from areal.infra.platforms import current_platform
 from areal.utils.data import broadcast_tensor_container
 from areal.utils.testing_utils import DENSE_MODEL_PATHS
 
@@ -135,7 +141,7 @@ def _make_input(engine: MegatronEngine) -> dict[str, Any]:
 
 
 def _cleanup(engine: MegatronEngine):
-    torch.cuda.synchronize()
+    current_platform.synchronize()
     dist.barrier()
     engine.destroy()
 
