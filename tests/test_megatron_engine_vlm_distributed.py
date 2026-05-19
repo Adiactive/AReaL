@@ -227,6 +227,33 @@ def test_qwen3vl_moe_expert_parallel(tmp_path_factory):
 @pytest.mark.multi_gpu
 @pytest.mark.slow
 @pytest.mark.skipif(not ACCELERATOR_AVAILABLE, reason="No accelerator available")
+def test_qwen3vl_moe_hf_save_load(tmp_path_factory):
+    """HF save/load round-trip for Qwen3-VL-MoE under ``(attn:d2t4|ffn:d2e4)``.
+
+    Mirrors the forward smoke test's allocation (8 devices) and adds an
+    end-to-end ``save → zero → load → forward-match`` cycle in HF
+    safetensors format. This exercises the MoE expert collection / gather
+    path in ``hf_save.py`` for 30B-A3B that DCP save/load can't cover on
+    NPU (vendored mcore 0.12.1 has a torch-2.9 signature mismatch).
+    """
+    if current_platform.device_count() < 8:
+        pytest.skip("Qwen3-VL-MoE HF save load requires 8 GPUs to run")
+    save_dir = str(tmp_path_factory.mktemp("vlm_save_moe"))
+    output = str(
+        tmp_path_factory.mktemp("test_output") / "qwen3vl_moe_hf_save_load.out"
+    )
+    _run_vlm_test(
+        "save_load",
+        output,
+        backend="megatron:(attn:d2t4|ffn:d2e4)",
+        extra_args=[f"--save_dir={save_dir}"],
+        env_overrides={"VLM_MODEL_PATH": MOE_MODEL_PATHS["qwen3_vl_moe"]},
+    )
+
+
+@pytest.mark.multi_gpu
+@pytest.mark.slow
+@pytest.mark.skipif(not ACCELERATOR_AVAILABLE, reason="No accelerator available")
 @pytest.mark.skipif(
     NPU_DCP_UNSUPPORTED,
     reason="DCP save/load unsupported on NPU (mcore 0.12.1 + torch 2.9 _write_item "
