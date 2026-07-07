@@ -279,6 +279,7 @@ class BatchTaskDispatcher(Generic[TInput, TResult]):
         task_factory: Callable[[TInput], Callable[[], Awaitable[TResult | None]]],
         staleness_manager: StalenessManager,
         enable_tracing: bool = False,
+        pin_staleness: bool = False,
     ):
         self.runner = AsyncTaskRunner(
             max_queue_size=max_queue_size,
@@ -287,6 +288,7 @@ class BatchTaskDispatcher(Generic[TInput, TResult]):
         self.task_factory = task_factory
         self.staleness_manager = staleness_manager
         self.enable_tracing = enable_tracing
+        self.pin_staleness = pin_staleness
         self.logger: Logger
 
         # Unbounded deques for producer/consumer pattern
@@ -544,6 +546,11 @@ class BatchTaskDispatcher(Generic[TInput, TResult]):
         with self._result_cv:
             self._active_task_ids.add(task_input.task_id)
 
+    def get_result_backlog(self) -> int:
+        """Number of completed results awaiting collection."""
+        with self._result_cv:
+            return len(self._pending_results)
+
     def wait_results(
         self, count: int, timeout: float | None = None, raise_timeout: bool = True
     ) -> list[TResult | None]:
@@ -667,10 +674,22 @@ class BatchTaskDispatcher(Generic[TInput, TResult]):
         ------
         RuntimeError
             If the input generator is exhausted before the batch is complete.
+
+        Notes
+        -----
+        When ``pin_staleness`` is enabled, a completed batch is held back until
+        the result backlog reaches ``max_staleness * batch_size``, so the FIFO
+        queue wait pins consumed-sample staleness at ``max_staleness``. This
+        replicates the saturated regime where rollout fills the full staleness
+        budget ahead of the trainer.
         """
         accepted_cnt = 0
         total_attempts = 0
         results = []
+        batch_ready = False
+        backlog_floor = 0
+        if self.pin_staleness:
+            backlog_floor = self.staleness_manager.max_staleness * batch_size
 
         while True:
             # Submit tasks to maintain overlap
@@ -700,32 +719,53 @@ class BatchTaskDispatcher(Generic[TInput, TResult]):
                             "Input generator exhausted before batch completion. "
                             "Use cycle_dataloader() or provide an infinite generator."
                         ) from None
-            try:
-                arrived = self.wait_results(count=batch_size - accepted_cnt, timeout=1)
-            except TimeoutError:
-                arrived = []
+            if not batch_ready:
+                try:
+                    arrived = self.wait_results(
+                        count=batch_size - accepted_cnt, timeout=1
+                    )
+                except TimeoutError:
+                    arrived = []
 
-            for res in arrived:
-                is_accepted = res is not None
+                for res in arrived:
+                    is_accepted = res is not None
 
-                if not is_accepted:
+                    if not is_accepted:
+                        if dynamic_bs:
+                            total_attempts += 1
+                            if total_attempts >= batch_size:
+                                batch_ready = True
+                                break
+                        continue
+
+                    # Accepted sample
+                    accepted_cnt += 1
+                    total_attempts += 1
+                    results.append(res)
+
                     if dynamic_bs:
-                        total_attempts += 1
                         if total_attempts >= batch_size:
+                            batch_ready = True
                             break
-                    continue
-
-                # Accepted sample
-                accepted_cnt += 1
-                total_attempts += 1
-                results.append(res)
-
-                if dynamic_bs:
-                    if total_attempts >= batch_size:
+                    elif accepted_cnt >= batch_size:
+                        batch_ready = True
                         break
-                elif accepted_cnt >= batch_size:
+
+            if not batch_ready:
+                continue
+
+            if backlog_floor > 0 and self.get_result_backlog() < backlog_floor:
+                self._check_thread_exception()
+                if (
+                    self.staleness_manager.get_capacity() <= 0
+                    and self.staleness_manager.get_stats().running == 0
+                ):
+                    # No rollout in flight and submission is blocked until the
+                    # version advances; holding the batch would deadlock.
                     break
-            else:
+                with self._result_cv:
+                    if len(self._pending_results) < backlog_floor:
+                        self._result_cv.wait(timeout=1)
                 continue
             break
 
@@ -1062,6 +1102,7 @@ class WorkflowExecutor:
             task_factory=self._create_workflow_task,
             staleness_manager=self._staleness_manager,
             enable_tracing=self.config.enable_rollout_tracing,
+            pin_staleness=self.config.pin_staleness,
         )
 
         # Initialize the dispatcher's async task runner

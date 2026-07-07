@@ -2316,6 +2316,16 @@ class InferenceEngineConfig:
             "the request will not be accepted.",
         },
     )
+    pin_staleness: bool = field(
+        default=False,
+        metadata={
+            "help": "Delay batch consumption until enough completed rollouts have "
+            "accumulated, so consumed samples age to max_head_offpolicyness "
+            "versions. Trades a one-time buffer-fill delay for uniformly stale, "
+            "version-homogeneous batches. Only affects prepare_batch(); no effect "
+            "when max_head_offpolicyness == 0.",
+        },
+    )
     enable_rollout_tracing: bool = field(
         default=False,
         metadata={
