@@ -591,12 +591,6 @@ class MegatronEngine(TrainEngine):
                         "fla_npu nor fla.modules.convolution is available."
                     )
             if self.is_vision_model:
-                if self.parallel_strategy.context_parallel_size > 1:
-                    raise NotImplementedError(
-                        "Context parallel (CP > 1) is not supported with VLM models. "
-                        f"Got context_parallel_size={self.parallel_strategy.context_parallel_size} "
-                        f"for model_type={self.hf_config.model_type}."
-                    )
                 self.processor, self.tokenizer = load_hf_processor_and_tokenizer(
                     self.config.path
                 )
@@ -3100,7 +3094,12 @@ class MegatronEngine(TrainEngine):
                     else None,
                 )
                 return logprobs
-            labels = torch.roll(inputs["input_ids"], shifts=-1, dims=-1)
+            cp_local_labels = inputs.get("_cp_local_labels")
+            cp_padded_cu_seqlens = inputs.get("_cp_padded_cu_seqlens")
+            if cp_local_labels is not None:
+                labels = cp_local_labels
+            else:
+                labels = torch.roll(inputs["input_ids"], shifts=-1, dims=-1)
             logprobs = gather_logprobs(
                 output,
                 labels,
@@ -3109,9 +3108,26 @@ class MegatronEngine(TrainEngine):
                 if mpu.get_tensor_model_parallel_world_size() > 1
                 else None,
             )
+            if cp_padded_cu_seqlens is not None:
+                logprobs = reassemble_cp_packed_logprobs(logprobs, cp_padded_cu_seqlens)
+                logprobs = unpad_logits(
+                    logprobs,
+                    inputs.get("_cp_padding_length", 0),
+                    cp_padded_cu_seqlens,
+                    inputs.get("_cp_old_cu_seqlens"),
+                )
             return logprobs
         else:
             values = output.squeeze(-1)
+            cp_padded_cu_seqlens = inputs.get("_cp_padded_cu_seqlens")
+            if cp_padded_cu_seqlens is not None:
+                values = reassemble_cp_packed_logprobs(values, cp_padded_cu_seqlens)
+                values = unpad_logits(
+                    values,
+                    inputs.get("_cp_padding_length", 0),
+                    cp_padded_cu_seqlens,
+                    inputs.get("_cp_old_cu_seqlens"),
+                )
             return values
 
 

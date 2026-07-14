@@ -318,6 +318,14 @@ def _build_thd_packed_seq_params(cu_seqlens: torch.Tensor) -> PackedSeqParams:
     alignment, so actual and padded cu_seqlens coincide.
     """
     input_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+    tp_size = mpu.get_tensor_model_parallel_world_size()
+    cp_size = mpu.get_context_parallel_world_size()
+    alignment = tp_size * cp_size * 2 if cp_size > 1 else tp_size
+    if torch.any(input_lens % alignment):
+        raise ValueError(
+            f"Model-packed THD sequence lengths must be divisible by {alignment} "
+            f"for TP={tp_size}, CP={cp_size}; got {input_lens.tolist()}."
+        )
     max_seqlen = int(input_lens.max().item())
     return PackedSeqParams(
         qkv_format="thd",
@@ -354,6 +362,15 @@ def packed_context_parallel_forward(
     has_vision_inputs = is_vision_model and any(
         key in input_ for key in _VLM_FORWARD_KEYS
     )
+    if (
+        has_vision_inputs
+        and use_model_packed_seq
+        and mpu.get_context_parallel_world_size() > 1
+    ):
+        raise NotImplementedError(
+            "Model-owned THD with context parallelism currently supports "
+            "text-only microbatches; vision inputs are not supported yet."
+        )
     # Padded-vs-packed routing is keyed on the MODEL type:
     # - VLM models cannot consume the wrapper-packed [1, total_len] layout
     #   (their internal packing needs a per-sequence 2D mask — mbridge
@@ -384,10 +401,6 @@ def packed_context_parallel_forward(
                 raise ValueError(
                     "Attention mask and tree attention are not supported with "
                     "the model-packed THD forward."
-                )
-            if mpu.get_context_parallel_world_size() > 1:
-                raise NotImplementedError(
-                    "The model-packed THD forward does not support CP > 1 yet."
                 )
             input_ids, attention_mask, _, _ = _reconstruct_padded_2d(
                 input_ids, cu_seqlens
@@ -442,10 +455,10 @@ def packed_context_parallel_forward(
             if key in input_:
                 vlm_kwargs[key] = input_[key]
 
-    # For BSHD text-only, drop the packed-form position_ids (a 1D tensor of
-    # length total_len) — they don't match the 2D [B, S] input. Let mcore
-    # compute the default torch.arange positions per row; padding positions
-    # are masked out by attention_mask.
+    # For the dense BSHD text forward, drop the packed-form position_ids (a 1D
+    # tensor of length total_len) — they don't match the 2D [B, S] input. Let
+    # mcore compute the default torch.arange positions per row; padding
+    # positions are masked out by attention_mask.
     if dense_mask_text_forward:
         position_ids = None
 
