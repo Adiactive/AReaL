@@ -97,10 +97,13 @@ from areal.engine.core.distributed import (
     warmup_process_groups,
 )
 from areal.engine.core.model import (
+    SequencePackingMode,
     disable_dropout_in_model,
+    is_qwen3_5_model,
     is_valid_vision_model,
     lang_config,
-    requires_padded_seq,
+    resolve_sequence_packing_mode,
+    validate_context_parallel_mode,
 )
 from areal.engine.megatron_utils import (
     ascend_log_patches,  # noqa: F401
@@ -373,6 +376,8 @@ class MegatronEngine(TrainEngine):
                 )
         self.bridge_lora: MegatronBridgeLoRA | None = None
         self.is_vision_model: bool = False
+        self.sequence_packing_mode: SequencePackingMode | None = None
+        self.use_model_packed_seq: bool = False
         self.processor = None
         self.awex_writer: AwexMegatronWriterAdapter | None = None
 
@@ -544,10 +549,47 @@ class MegatronEngine(TrainEngine):
                     setattr(target_config, field, getattr(self.mcore_config, field))
 
             self.is_vision_model = is_valid_vision_model(self.hf_config.model_type)
-            # GDN/SSM models (e.g. Qwen3.5) reject packed THD input and must run
-            # the padded BSHD forward. Derived from model type rather than a
-            # config flag so the layout can't be mis-set.
-            self.use_padded_seq = requires_padded_seq(self.hf_config.model_type)
+            # Model-packed THD forward: the megatron-bridge Qwen3VLModel family
+            # (Qwen3-VL and Qwen3.5, whose checkpoints are natively multimodal)
+            # accepts padded [B, S] input plus PackedSeqParams and packs to THD
+            # internally after the vision merge / mRoPE computation. On NPU,
+            # _patch_mindspeed also activates the packed-capable GatedDeltaNet.
+            self.sequence_packing_mode = resolve_sequence_packing_mode(
+                self.hf_config.model_type, self.bridge_cls
+            )
+            self.use_model_packed_seq = (
+                self.sequence_packing_mode == SequencePackingMode.MODEL_THD
+            )
+            # GDN/SSM models (e.g. Qwen3.5) reject packed THD input in stock
+            # megatron-core and must run the padded BSHD forward unless the
+            # model-packed THD path above is active. Derived from model type
+            # rather than a config flag so the layout can't be mis-set.
+            self.use_padded_seq = (
+                self.sequence_packing_mode == SequencePackingMode.PADDED
+            )
+            validate_context_parallel_mode(
+                self.sequence_packing_mode,
+                self.parallel_strategy.context_parallel_size,
+                self.hf_config.model_type,
+            )
+            if self.use_model_packed_seq and is_qwen3_5_model(
+                self.hf_config.model_type
+            ):
+                from megatron.core.ssm.gated_delta_net import GatedDeltaNet
+                from mindspeed.core.ssm import gated_delta_net as mindspeed_gdn
+
+                if not GatedDeltaNet.__module__.startswith("mindspeed"):
+                    raise RuntimeError(
+                        "Packed (THD) forward for Qwen3.5-family models requires "
+                        "MindSpeed's GatedDeltaNet, but the stock megatron-core "
+                        "class is active (it rejects packed sequences)."
+                    )
+                if mindspeed_gdn.causal_conv1d is None:
+                    raise RuntimeError(
+                        "Packed (THD) forward for Qwen3.5-family models requires "
+                        "a varlen causal_conv1d implementation, but neither "
+                        "fla_npu nor fla.modules.convolution is available."
+                    )
             if self.is_vision_model:
                 if self.parallel_strategy.context_parallel_size > 1:
                     raise NotImplementedError(
@@ -561,15 +603,6 @@ class MegatronEngine(TrainEngine):
                 self.logger.info(
                     f"VLM model detected (type={self.hf_config.model_type}). "
                     f"Loaded processor and tokenizer."
-                )
-
-            if self.use_padded_seq and self.parallel_strategy.context_parallel_size > 1:
-                raise NotImplementedError(
-                    f"Context parallel (CP > 1) is not supported for "
-                    f"model_type={self.hf_config.model_type!r}, which requires the "
-                    "padded BSHD forward (it operates on [B, S] tensors while the "
-                    "CP path packs sequences). "
-                    f"Got context_parallel_size={self.parallel_strategy.context_parallel_size}."
                 )
 
             self.quantization_config = getattr(
@@ -1098,6 +1131,7 @@ class MegatronEngine(TrainEngine):
                 gather_cp_output=not cp_local,
                 is_vision_model=self.is_vision_model,
                 use_padded_seq=self.use_padded_seq,
+                use_model_packed_seq=self.use_model_packed_seq,
             )
 
             # Release tree attention metadata after forward pass
@@ -2632,6 +2666,14 @@ class MegatronEngine(TrainEngine):
         repatch(config)
         _patch_mindspeed_mlp_init_tp_group()
         _patch_mindspeed_npu_groupmatmul_add_fp32_dtype()
+        if self.bridge_cls == "megatron-bridge":
+            from areal.engine.megatron_utils.mindspeed_gdn_patch import (
+                ensure_mindspeed_gdn_conv1d,
+                ensure_mindspeed_gdn_model_class,
+            )
+
+            ensure_mindspeed_gdn_model_class()
+            ensure_mindspeed_gdn_conv1d()
 
     def _save_model_to_hf(
         self,

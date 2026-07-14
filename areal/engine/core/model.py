@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from enum import Enum
+
 import torch
 
 VALID_VISION_MODELS = [
@@ -85,14 +87,53 @@ def is_qwen3_5_model(model_type: str) -> bool:
     return model_type in ["qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text"]
 
 
-def requires_padded_seq(model_type: str) -> bool:
+def supports_model_packed_seq(model_type: str, bridge_type: str) -> bool:
+    """Whether the bridge model owns BSHD-to-THD packing internally."""
+    return bridge_type == "megatron-bridge" and (
+        is_qwen3_vl_model(model_type) or model_type in ("qwen3_5", "qwen3_5_moe")
+    )
+
+
+class SequencePackingMode(str, Enum):
+    WRAPPER_THD = "wrapper_thd"
+    MODEL_THD = "model_thd"
+    PADDED = "padded"
+
+
+def resolve_sequence_packing_mode(
+    model_type: str, bridge_type: str
+) -> SequencePackingMode:
+    """Select one packing path from the model and bridge contract."""
+    if supports_model_packed_seq(model_type, bridge_type):
+        return SequencePackingMode.MODEL_THD
+    if is_valid_vision_model(model_type) or is_qwen3_5_model(model_type):
+        return SequencePackingMode.PADDED
+    return SequencePackingMode.WRAPPER_THD
+
+
+def validate_context_parallel_mode(
+    mode: SequencePackingMode, context_parallel_size: int, model_type: str
+) -> None:
+    """Reject context parallelism only for models that require padded input."""
+    if context_parallel_size > 1 and mode == SequencePackingMode.PADDED:
+        raise NotImplementedError(
+            f"Context parallel (CP > 1) is not supported for "
+            f"model_type={model_type!r}, which requires the padded BSHD forward. "
+            f"Got context_parallel_size={context_parallel_size}."
+        )
+
+
+def requires_padded_seq(model_type: str, bridge_type: str = "mbridge") -> bool:
     """Whether the model must run the padded (BSHD) forward instead of packed (THD).
 
-    GDN/SSM models (currently the Qwen3.5 family) reject packed sequences in their
-    attention/SSM kernels, so they must run on padded ``[B, S]`` input. THD stays
-    the default for every other model.
+    Model-owned THD is selected from the bridge contract. Other VLM and
+    GDN/SSM models require padded input, while ordinary text models use the
+    wrapper-owned THD path.
     """
-    return is_qwen3_5_model(model_type)
+    return (
+        resolve_sequence_packing_mode(model_type, bridge_type)
+        == SequencePackingMode.PADDED
+    )
 
 
 # Copied from trl

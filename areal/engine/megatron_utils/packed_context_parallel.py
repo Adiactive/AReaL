@@ -284,12 +284,59 @@ def extract_vision_from_multi_modal(
     _drop_multi_modal_payload(mb)
 
 
+def _reconstruct_padded_2d(
+    input_ids: torch.Tensor, cu_seqlens: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    """Reconstruct padded 2D ``[B, S]`` tensors from packed 1D via boolean
+    masking — avoids per-sample Python loop and GPU-CPU sync.
+
+    Returns ``(input_ids_2d, attention_mask, seq_lens, max_seqlen)``.
+    """
+    batch_size = cu_seqlens.shape[0] - 1
+    seq_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+    max_seqlen = int(seq_lens.max().item())
+    # int64 for input_ids: mbridge's get_rope_index uses input_ids.dtype
+    # for position_ids, and some kernels (_index_put_impl_) require int64.
+    # Upcast to torch.long so the scatter `input_ids_2d[mask] = input_ids`
+    # below has matching source/dest dtypes (data pipeline may emit int32).
+    if input_ids.dtype != torch.long:
+        input_ids = input_ids.to(torch.long)
+    attention_mask = (
+        torch.arange(max_seqlen, device=input_ids.device)[None, :] < seq_lens[:, None]
+    )
+    input_ids_2d = torch.zeros(
+        batch_size, max_seqlen, dtype=torch.long, device=input_ids.device
+    )
+    input_ids_2d[attention_mask] = input_ids
+    return input_ids_2d, attention_mask, seq_lens, max_seqlen
+
+
+def _build_thd_packed_seq_params(cu_seqlens: torch.Tensor) -> PackedSeqParams:
+    """Build THD-format PackedSeqParams for pre-aligned packed sequences.
+
+    Sequences in AReaL microbatches are already padded to the parallelism
+    alignment, so actual and padded cu_seqlens coincide.
+    """
+    input_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+    max_seqlen = int(input_lens.max().item())
+    return PackedSeqParams(
+        qkv_format="thd",
+        cu_seqlens_q=cu_seqlens,
+        max_seqlen_q=max_seqlen,
+        cu_seqlens_kv=cu_seqlens,
+        max_seqlen_kv=max_seqlen,
+        cu_seqlens_q_padded=cu_seqlens,
+        cu_seqlens_kv_padded=cu_seqlens,
+    )
+
+
 def packed_context_parallel_forward(
     model: torch.nn.Module,
     input_: dict[str, Any],
     gather_cp_output: bool = True,
     is_vision_model: bool = False,
     use_padded_seq: bool = False,
+    use_model_packed_seq: bool = False,
 ):
     input_ids = input_["input_ids"]
     position_ids = input_.get("position_ids", None)
@@ -315,14 +362,40 @@ def packed_context_parallel_forward(
     #   branch too.
     # - Architectures whose attention/SSM kernels reject packed sequences
     #   (use_padded_seq, e.g. Qwen3.5 GDN) must run on [B, S] padded input.
-    needs_padded_form = is_vision_model or use_padded_seq
+    # The model-packed THD path (Pattern B) overrides both: the model itself
+    # consumes padded [B, S] input and packs internally.
+    needs_padded_form = (is_vision_model or use_padded_seq) and not use_model_packed_seq
 
     # Track shape metadata so the output can be repacked back to packed
     # [total_len, ...] form on the last PP stage.
     padded_repack_info = None
 
     if cu_seqlens is not None:
-        if not needs_padded_form:
+        if use_model_packed_seq:
+            # Model-packed THD (megatron-bridge Qwen3VLModel family): pass
+            # padded [B, S] input_ids + 2D attention_mask + PackedSeqParams.
+            # The model merges vision embeddings and computes (m)RoPE on the
+            # padded view, then packs to THD internally, so the decoder runs
+            # packed and the output comes back in packed [total_len, ...] form
+            # (no repack needed). This applies to text-only microbatches too:
+            # the model derives per-sequence packing and positions from the 2D
+            # mask, which a pre-packed [1, total_len] input would break.
+            if attention_mask is not None or tree_triton_data is not None:
+                raise ValueError(
+                    "Attention mask and tree attention are not supported with "
+                    "the model-packed THD forward."
+                )
+            if mpu.get_context_parallel_world_size() > 1:
+                raise NotImplementedError(
+                    "The model-packed THD forward does not support CP > 1 yet."
+                )
+            input_ids, attention_mask, _, _ = _reconstruct_padded_2d(
+                input_ids, cu_seqlens
+            )
+            packed_seq_params = _build_thd_packed_seq_params(cu_seqlens)
+            # The model computes (m)RoPE positions internally from the mask.
+            position_ids = None
+        elif not needs_padded_form:
             if attention_mask is not None or tree_triton_data is not None:
                 raise ValueError(
                     "Attention mask should be None when using packed sequences."
@@ -332,41 +405,26 @@ def packed_context_parallel_forward(
             )
             input_ids = input_ids.contiguous()
         else:
-            # VLM and BSHD-only models expect [B, S] padded input. Reconstruct
-            # padded 2D tensors from packed 1D via boolean masking — avoids
-            # per-sample Python loop and GPU-CPU sync.
-            batch_size = cu_seqlens.shape[0] - 1
-            seq_lens = cu_seqlens[1:] - cu_seqlens[:-1]
-            max_seqlen = int(seq_lens.max().item())
-            # int64 for input_ids: mbridge's get_rope_index uses input_ids.dtype
-            # for position_ids, and some kernels (_index_put_impl_) require int64.
-            # Upcast to torch.long so the scatter `input_ids_2d[mask] = input_ids`
-            # below has matching source/dest dtypes (data pipeline may emit int32).
-            if input_ids.dtype != torch.long:
-                input_ids = input_ids.to(torch.long)
-            attention_mask = (
-                torch.arange(max_seqlen, device=input_ids.device)[None, :]
-                < seq_lens[:, None]
+            # VLM and BSHD-only models expect [B, S] padded input.
+            input_ids, attention_mask, seq_lens, max_seqlen = _reconstruct_padded_2d(
+                input_ids, cu_seqlens
             )
-            input_ids_2d = torch.zeros(
-                batch_size, max_seqlen, dtype=torch.long, device=input_ids.device
-            )
-            input_ids_2d[attention_mask] = input_ids
-            input_ids = input_ids_2d
             padded_repack_info = (cu_seqlens, seq_lens, max_seqlen)
 
-    # Every VLM forward is mask-free (attention_mask=None): the model
-    # computes (m)RoPE positions internally, each batch slot holds one
-    # sequence with trailing padding so causal attention yields correct
-    # outputs at non-padding positions, and padding outputs are discarded
-    # during repack. The one exception is the padded BSHD text forward of
-    # use_padded_seq models, which consumes the dense 2D mask so attention
-    # layers skip padding. The wrapper-packed path carries no mask either
-    # way (enforced above); tree data passes through untouched.
+    # The dense 2D BSHD text forward of a use_padded_seq model (e.g. a Qwen3.5
+    # text-only microbatch) is the one padded case that would consume an
+    # explicit mask; every other VLM forward is mask-free (the model computes
+    # (m)RoPE positions internally, each batch slot holds one padded sequence,
+    # and padding outputs are discarded during repack).
     dense_mask_text_forward = use_padded_seq and not has_vision_inputs
-    if is_vision_model and not dense_mask_text_forward:
+    if use_model_packed_seq:
+        # Model-packed THD (Pattern B): the model uses the reconstructed 2D
+        # mask to derive per-sequence packing and (m)RoPE, then drops it
+        # before the packed decoder.
+        final_attention_mask = attention_mask
+    elif is_vision_model and not dense_mask_text_forward:
         final_attention_mask = None
-    elif use_padded_seq and is_npu_available and tree_triton_data is None:
+    elif dense_mask_text_forward and is_npu_available and tree_triton_data is None:
         # MindSpeed's Ascend FlashAttentionScore rejects dense [B, S] masks; it
         # builds its own causal mask when attention_mask is None. Padding outputs
         # are discarded during repack (same as the VLM branch).
