@@ -2,16 +2,18 @@
 
 """Quiet known-benign NPU log spam (NPU-only; no-op elsewhere).
 
-Three unrelated, harmless sources flood the per-rank logs, each filtered/guarded
+Four unrelated, harmless sources flood the per-rank logs, each filtered/guarded
 below without editing the installed packages:
 
-1. triton-ascend's JIT ``Please DO NOT tune args`` print on every kernel compile.
-2. MindSpeed's ``tp_group is None`` DeprecationWarning, repeated per TP layer.
-3. torch_npu's MSTX ``range_end`` TypeError from no-id native calls, per op-range.
+1. Transformers 5.5.4's image-processor alias warning on non-``Fast`` symbols.
+2. triton-ascend's JIT ``Please DO NOT tune args`` print on every kernel compile.
+3. MindSpeed's ``tp_group is None`` DeprecationWarning, repeated per TP layer.
+4. torch_npu's MSTX ``range_end`` TypeError from no-id native calls, per op-range.
 """
 
 from __future__ import annotations
 
+import logging as stdlib_logging
 import warnings
 
 import areal.utils.logging as logging
@@ -19,6 +21,78 @@ import areal.utils.logging as logging
 logger = logging.getLogger("AscendLogPatches")
 
 _TRITON_NOISE = "Please DO NOT tune args"
+
+
+def _silence_transformers_image_processing_alias_noise() -> None:
+    """Keep v5.5.4's intended ``*Fast`` warnings, drop non-class alias spam."""
+    import sys
+
+    import transformers
+
+    noise_filter = _TransformersImageAliasNoiseFilter()
+
+    loggers = [transformers.logging.get_logger("transformers")]
+    for name, module in sys.modules.items():
+        if not (
+            name.startswith("transformers.models.")
+            and ".image_processing_" in name
+            and name.endswith("_fast")
+        ):
+            continue
+        getter = getattr(module, "__getattr__", None)
+        alias_logger = getattr(getter, "__globals__", {}).get("logger")
+        if alias_logger is not None:
+            loggers.append(alias_logger)
+            break
+
+    for transformers_logger in {id(item): item for item in loggers}.values():
+        if getattr(transformers_logger, "_areal_image_alias_noise_silenced", False):
+            continue
+        original_warning = transformers_logger.warning
+
+        def _filtered_warning(
+            message,
+            *args,
+            _logger=transformers_logger,
+            _original=original_warning,
+            **kwargs,
+        ):
+            record = stdlib_logging.LogRecord(
+                _logger.name,
+                stdlib_logging.WARNING,
+                "",
+                0,
+                message,
+                args,
+                None,
+            )
+            if not noise_filter.filter(record):
+                return
+            return _original(message, *args, **kwargs)
+
+        # Logger filters are cleared whenever AReaL rebuilds its logging config.
+        # Wrapping these instances survives those later reconfigurations.
+        transformers_logger.warning = _filtered_warning
+        transformers_logger._areal_image_alias_noise_silenced = True
+    logger.info("Filtered Transformers image-processing alias noise.")
+
+
+class _TransformersImageAliasNoiseFilter(stdlib_logging.Filter):
+    def filter(self, record: stdlib_logging.LogRecord) -> bool:
+        message = record.getMessage()
+        prefix = "Accessing `"
+        if not (
+            record.name == "transformers"
+            and message.startswith(prefix)
+            and " from `.models." in message
+            and ".image_processing_" in message
+            and message.endswith(
+                "Behavior may be different and this alias will be removed in future versions."
+            )
+        ):
+            return True
+        name = message[len(prefix) :].partition("`")[0]
+        return name.endswith("Fast")
 
 
 def _silence_triton_tune_args_print() -> None:
@@ -84,6 +158,10 @@ def _silence_mstx_range_end_error() -> None:
 
 
 def _apply() -> None:
+    # Install this before platform detection imports torch. On Ascend,
+    # importing torch_npu can trigger the malformed alias lookups.
+    _silence_transformers_image_processing_alias_noise()
+
     from areal.infra.platforms import is_npu_available
 
     if not is_npu_available:

@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # This is the NPU-specific project configuration for Ascend 910 environments.
-# The base Docker image (vllm-ascend) provides: torch, torch-npu, vllm-ascend.
+# The NPU Dockerfiles provide torch, torch-npu, vLLM, and vllm-ascend.
 # Megatron-core + MindSpeed are installed from source in the Dockerfile.
 # SGLang is NOT installed on NPU.
 #
@@ -60,7 +60,8 @@ dependencies = [
     "torchdata",
     "huggingface_hub",
     "datasets>=3.0.0",
-    "transformers==5.3.0",
+    "pyarrow<25",
+    "transformers==5.5.4",
     # NPU GDN/VLM runtime deps. flash-linear-attention: triton GDN ops (pin 0.5.0,
     # auto-pulls matching fla-core). nvidia-modelopt + qwen-vl-utils: needed by the
     # mindspeed adaptor / megatron-bridge.
@@ -71,7 +72,7 @@ dependencies = [
     "mbridge @ git+https://github.com/ISEEKYAN/mbridge.git@08975e6",
     "peft<=0.18.1",
     "qwen_agent",
-    # vllm requirements/common.txt caps openai<2.25
+    # Keep openai-agents on its OpenAI SDK 2.24-compatible release.
     "openai<2.25",
     "openai-agents",
     "anthropic",
@@ -143,11 +144,9 @@ dependencies = [
     "awex==0.7.0",
 
     # Web frameworks
-    # Cap starlette <1.3 (and fastapi <0.137, which pulls it): starlette 1.3
-    # exposes included routers as _IncludedRouter (no `.path`), breaking
-    # prometheus_fastapi_instrumentator in vLLM's API server -- every request
-    # 500s, so the rollout server never reports healthy and launch times out.
-    "fastapi>=0.115.12,<0.137",
+    # vllm-ascend 0.23.0 requires fastapi<0.124.0. Keep the explicit starlette
+    # cap as a second guard for prometheus_fastapi_instrumentator compatibility.
+    "fastapi>=0.115.12,<0.124.0",
     "starlette<1.3",
     "uvicorn",
     "uvloop>=0.21.0",

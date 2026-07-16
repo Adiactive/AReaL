@@ -23,21 +23,24 @@ ARG MINDSPEED_COMMIT=edd30e450dd64fe2d00fa5b963ab868a94b174f6
 # Must be pinned to this specific commit: megatron-core 0.16.x compatible. The v0.4.x tags pin
 # megatron-core 0.17.1, which MindSpeed core_r0.16.0 does not support.
 ARG MEGATRON_BRIDGE_COMMIT=de93536e
-ARG VLLM_TAG=v0.18.0
-ARG VLLM_ASCEND_BRANCH=releases/v0.18.0
+ARG VLLM_TAG=v0.23.0
+ARG VLLM_ASCEND_BRANCH=releases/v0.23.0
+ARG TORCH_NPU_VERSION=2.10.0
 ARG ASCEND_INSTALL_PATH=/usr/local/Ascend
 ARG SOC_VERSION=ascend910b1
 
 # System build deps (the clean CANN base ships none) + pip/uv bootstrap.
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
-        gcc g++ cmake libnuma-dev wget git curl jq vim build-essential gawk && \
+        gcc g++ cmake libnuma-dev wget git curl jq vim build-essential gawk clang-15 && \
+    update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 20 && \
+    update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-15 20 && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
     python3 -m pip install -U pip "setuptools==80.10.2" uv && \
     python3 -m pip cache purge
 
-# Install vLLM + vllm-ascend; requirements.txt brings the
-# matching torch-npu 2.9.0.post2 + triton-ascend 3.2.1 from the Ascend index.
+# Install vLLM + vllm-ascend. Keep the v0.23.0 stack, but override torch-npu below.
+# Work around a torch-npu 2.10.0.post2 grouped P2P regression affecting AWEX weight updates.
 RUN export PIP_EXTRA_INDEX_URL=https://triton-ascend.osinfra.cn/pypi/simple/ && \
     export PIP_TRUSTED_HOST=triton-ascend.osinfra.cn && \
     export SOC_VERSION=${SOC_VERSION} && \
@@ -45,11 +48,14 @@ RUN export PIP_EXTRA_INDEX_URL=https://triton-ascend.osinfra.cn/pypi/simple/ && 
     . ${ASCEND_INSTALL_PATH}/ascend-toolkit/set_env.sh && \
     . ${ASCEND_INSTALL_PATH}/nnal/atb/set_env.sh && \
     git clone --depth 1 --branch ${VLLM_TAG} https://github.com/vllm-project/vllm.git /areal-workspace/vllm && \
-    git clone --branch ${VLLM_ASCEND_BRANCH} https://github.com/vllm-project/vllm-ascend.git /areal-workspace/vllm-ascend && \
+    git clone --depth 1 --branch ${VLLM_ASCEND_BRANCH} https://github.com/vllm-project/vllm-ascend.git /areal-workspace/vllm-ascend && \
     cd /areal-workspace/vllm && \
-    pip install -r requirements/build.txt && \
     VLLM_TARGET_DEVICE=empty pip install -v -e . && \
+    pip uninstall -y triton && \
     cd /areal-workspace/vllm-ascend && \
+    grep -q "torch-npu==2.10.0.post2" requirements.txt && \
+    grep -q "torch-npu==2.10.0.post2" pyproject.toml && \
+    sed -i "s/torch-npu==2\\.10\\.0\\.post2/torch-npu==${TORCH_NPU_VERSION}/g" requirements.txt pyproject.toml && \
     pip install -r requirements.txt && \
     COMPILE_CUSTOM_KERNELS=1 pip install --no-build-isolation --no-deps -v -e . && \
     python3 -m pip cache purge

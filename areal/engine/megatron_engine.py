@@ -19,6 +19,7 @@ from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+import areal.engine.megatron_utils.ascend_log_patches  # noqa: F401 isort: skip  # before MindSpeed
 import areal.utils.torch_npu_compat  # noqa: F401 isort: skip  # before MindSpeed
 import areal.engine.megatron_utils.triton_l2norm_patch  # noqa: F401 isort: skip  # before MindSpeed: fast GDN l2norm
 import mindspeed.megatron_adaptor  # noqa: F401 isort: skip
@@ -105,10 +106,7 @@ from areal.engine.core.model import (
     resolve_sequence_packing_mode,
     validate_context_parallel_mode,
 )
-from areal.engine.megatron_utils import (
-    ascend_log_patches,  # noqa: F401
-    megatron_bridge_patches,  # noqa: F401
-)
+from areal.engine.megatron_utils import megatron_bridge_patches  # noqa: F401
 from areal.engine.megatron_utils.checkpointer import MegatronCheckpointManager
 from areal.engine.megatron_utils.deterministic import set_deterministic_algorithms
 from areal.engine.megatron_utils.fp8 import FP8BlockwiseTensorHelper
