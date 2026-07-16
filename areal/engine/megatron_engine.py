@@ -1519,7 +1519,9 @@ class MegatronEngine(TrainEngine):
         self.logger.info("release_memory: offloading tags=%s", tags_to_release)
 
         if "optimizer" in tags_to_release:
-            self._release_optimizer_states()
+            if not self.mindspeed_config.swap_optimizer:
+                self._release_optimizer_states()
+
             self.released_tags.add("optimizer")
 
         if "weights" in tags_to_release:
@@ -1550,7 +1552,9 @@ class MegatronEngine(TrainEngine):
             self.released_tags.discard("weights")
 
         if "optimizer" in tags_to_resume:
-            self._resume_optimizer_states()
+            if not self.mindspeed_config.swap_optimizer:
+                self._resume_optimizer_states()
+
             self.released_tags.discard("optimizer")
 
         current_platform.synchronize()
