@@ -9,6 +9,50 @@ from PIL.Image import Image as ImageObject
 from torchvision import transforms
 
 
+def _format_sft_conversation(
+    tokenizer,
+    problem: str,
+    answer: str,
+    chat_template_kwargs: dict[str, Any] | None,
+) -> tuple[str, int]:
+    if chat_template_kwargs is None:
+        response = answer + tokenizer.eos_token
+        response_ids = tokenizer.encode(response, add_special_tokens=False)
+        return problem + response, len(response_ids)
+
+    user_messages = [{"role": "user", "content": problem}]
+    full_messages = [
+        *user_messages,
+        {"role": "assistant", "content": answer},
+    ]
+    prompt = tokenizer.apply_chat_template(
+        user_messages,
+        add_generation_prompt=True,
+        tokenize=False,
+        **chat_template_kwargs,
+    )
+    full_text = tokenizer.apply_chat_template(
+        full_messages,
+        add_generation_prompt=False,
+        tokenize=False,
+        **chat_template_kwargs,
+    )
+    prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
+    full_ids = tokenizer.encode(full_text, add_special_tokens=False)
+    if full_ids[: len(prompt_ids)] != prompt_ids:
+        raise ValueError("SFT prompt tokens must be a prefix of the full conversation.")
+    return full_text, len(full_ids) - len(prompt_ids)
+
+
+def _make_sft_loss_mask(input_length: int, response_length: int) -> list[int]:
+    if response_length <= 0 or response_length > input_length:
+        raise ValueError(
+            f"Invalid SFT response length {response_length} for input length "
+            f"{input_length}."
+        )
+    return [0] * (input_length - response_length) + [1] * response_length
+
+
 def pad_to_square(img: Image.Image, fill=(0, 0, 0)) -> Image.Image:
     w, h = img.size
     side = max(w, h)
@@ -46,6 +90,7 @@ def get_geometry3k_sft_dataset(
     split: str,
     processor,
     max_length: int | None = None,
+    chat_template_kwargs: dict[str, Any] | None = None,
 ):
     """
     "geometry3k": {
@@ -75,7 +120,12 @@ def get_geometry3k_sft_dataset(
         for image in images:
             processed_images.append(convert_image(image, 512, 512))
         example["images"] = processed_images
-        example["seq"] = example["problem"] + example["answer"] + tokenizer.eos_token
+        example["seq"], example["response_length"] = _format_sft_conversation(
+            tokenizer,
+            example["problem"],
+            example["answer"],
+            chat_template_kwargs,
+        )
 
         return example
 
@@ -96,23 +146,30 @@ def get_geometry3k_sft_dataset(
         )
 
         example["input_ids"] = processed_input["input_ids"].squeeze(0)
-        example["mm_token_type_ids"] = processed_input.get("token_type_ids", None)
+        if "mm_token_type_ids" in processed_input:
+            example["mm_token_type_ids"] = processed_input["mm_token_type_ids"].squeeze(
+                0
+            )
         multi_modal_input = {}
         multi_modal_input["pixel_values"] = processed_input["pixel_values"]
         if "image_grid_thw" in processed_input:
-            multi_modal_input["image_grid_thw"] = processed_input[
-                "image_grid_thw"
-            ].squeeze(0)
+            multi_modal_input["image_grid_thw"] = processed_input["image_grid_thw"]
         example["multi_modal_input"] = [multi_modal_input]
-        answer_token = tokenizer.encode(example["answer"])
-        loss_mask = [0] * (len(example["input_ids"]) - len(answer_token)) + [1] * len(
-            answer_token
+        example["loss_mask"] = _make_sft_loss_mask(
+            len(example["input_ids"]),
+            example["response_length"],
         )
-        example["loss_mask"] = loss_mask
         return example
 
     dataset = dataset.map(
-        lambda x: _process(x), remove_columns=["images", "seq", "problem", "answer"]
+        lambda x: _process(x),
+        remove_columns=[
+            "images",
+            "seq",
+            "problem",
+            "answer",
+            "response_length",
+        ],
     )
 
     if max_length is not None:
