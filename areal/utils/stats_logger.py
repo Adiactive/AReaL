@@ -8,7 +8,6 @@ from dataclasses import asdict
 import swanlab
 import torch.distributed as dist
 import trackio
-import wandb
 from tensorboardX import SummaryWriter
 
 from areal.api import FinetuneSpec
@@ -30,6 +29,7 @@ class StatsLogger:
         self.exp_config = config
         self.config = config.stats_logger
         self.ft_spec = ft_spec
+        self._wandb = None
         self.init()
 
         self._last_commit_step = -1
@@ -38,19 +38,7 @@ class StatsLogger:
         if dist.is_initialized() and dist.get_rank() != 0:
             return
 
-        if self.config.wandb.wandb_base_url:
-            os.environ["WANDB_BASE_URL"] = self.config.wandb.wandb_base_url
-        if self.config.wandb.wandb_api_key:
-            os.environ["WANDB_API_KEY"] = self.config.wandb.wandb_api_key
-
         self.start_time = time.perf_counter()
-        # wandb init, connect to remote wandb host
-        if self.config.wandb.mode != "disabled":
-            wandb.login()
-
-        suffix = self.config.wandb.id_suffix
-        if suffix == "timestamp":
-            suffix = time.strftime("%Y_%m_%d_%H_%M_%S")
 
         exp_config_dict = asdict(self.exp_config)
         exp_config_dict["version_info"] = {
@@ -60,22 +48,37 @@ class StatsLogger:
             "version": version_info.full_version_with_dirty_description,
         }
 
-        wandb.init(
-            mode=self.config.wandb.mode,
-            entity=self.config.wandb.entity,
-            project=self.config.wandb.project or self.config.experiment_name,
-            name=self.config.wandb.name or self.config.trial_name,
-            job_type=self.config.wandb.job_type,
-            group=self.config.wandb.group
-            or f"{self.config.experiment_name}_{self.config.trial_name}",
-            notes=self.config.wandb.notes,
-            tags=self.config.wandb.tags,
-            config=exp_config_dict,  # save all experiment config to wandb
-            dir=self.get_log_path(self.config),
-            force=True,
-            id=f"{self.config.experiment_name}_{self.config.trial_name}_{suffix}",
-            resume="allow",
-        )
+        if self.config.wandb.mode != "disabled":
+            import wandb
+
+            self._wandb = wandb
+            if self.config.wandb.wandb_base_url:
+                os.environ["WANDB_BASE_URL"] = self.config.wandb.wandb_base_url
+            if self.config.wandb.wandb_api_key:
+                os.environ["WANDB_API_KEY"] = self.config.wandb.wandb_api_key
+
+            self._wandb.login()
+
+            suffix = self.config.wandb.id_suffix
+            if suffix == "timestamp":
+                suffix = time.strftime("%Y_%m_%d_%H_%M_%S")
+
+            self._wandb.init(
+                mode=self.config.wandb.mode,
+                entity=self.config.wandb.entity,
+                project=self.config.wandb.project or self.config.experiment_name,
+                name=self.config.wandb.name or self.config.trial_name,
+                job_type=self.config.wandb.job_type,
+                group=self.config.wandb.group
+                or f"{self.config.experiment_name}_{self.config.trial_name}",
+                notes=self.config.wandb.notes,
+                tags=self.config.wandb.tags,
+                config=exp_config_dict,  # save all experiment config to wandb
+                dir=self.get_log_path(self.config),
+                force=True,
+                id=f"{self.config.experiment_name}_{self.config.trial_name}_{suffix}",
+                resume="allow",
+            )
 
         swanlab_config = self.config.swanlab
         if swanlab_config.mode != "disabled":
@@ -125,7 +128,8 @@ class StatsLogger:
         logger.info(
             f"Training completes! Total time elapsed {time.monotonic() - self.start_time:.2f}."
         )
-        wandb.finish()
+        if self._wandb is not None:
+            self._wandb.finish()
         swanlab.finish()
         if getattr(self, "_trackio_enabled", False):
             trackio.finish()
@@ -149,7 +153,8 @@ class StatsLogger:
 
             logger.info(f"Stats ({i + 1}/{len(data)}):")
             self.print_stats(item)
-            wandb.log(item, step=log_step + i)
+            if self._wandb is not None:
+                self._wandb.log(item, step=log_step + i)
             swanlab.log(item, step=log_step + i)
             if getattr(self, "_trackio_enabled", False):
                 trackio.log(item, step=log_step + i)

@@ -102,11 +102,10 @@ class TestStatsLoggerTrackioIntegration:
     """Tests for Trackio integration in StatsLogger (mocked)."""
 
     @patch("areal.utils.stats_logger.trackio")
-    @patch("areal.utils.stats_logger.wandb")
     @patch("areal.utils.stats_logger.swanlab")
     @patch("areal.utils.stats_logger.dist")
     def test_trackio_init_called_when_enabled(
-        self, mock_dist, mock_swanlab, mock_wandb, mock_trackio
+        self, mock_dist, mock_swanlab, mock_trackio
     ):
         """trackio.init() should be called when mode is not disabled."""
         mock_dist.is_initialized.return_value = False
@@ -119,11 +118,10 @@ class TestStatsLoggerTrackioIntegration:
         assert logger._trackio_enabled is True
 
     @patch("areal.utils.stats_logger.trackio")
-    @patch("areal.utils.stats_logger.wandb")
     @patch("areal.utils.stats_logger.swanlab")
     @patch("areal.utils.stats_logger.dist")
     def test_trackio_not_init_when_disabled(
-        self, mock_dist, mock_swanlab, mock_wandb, mock_trackio
+        self, mock_dist, mock_swanlab, mock_trackio
     ):
         """trackio.init() should NOT be called when mode is disabled."""
         mock_dist.is_initialized.return_value = False
@@ -136,12 +134,9 @@ class TestStatsLoggerTrackioIntegration:
         assert logger._trackio_enabled is False
 
     @patch("areal.utils.stats_logger.trackio")
-    @patch("areal.utils.stats_logger.wandb")
     @patch("areal.utils.stats_logger.swanlab")
     @patch("areal.utils.stats_logger.dist")
-    def test_trackio_log_called_on_commit(
-        self, mock_dist, mock_swanlab, mock_wandb, mock_trackio
-    ):
+    def test_trackio_log_called_on_commit(self, mock_dist, mock_swanlab, mock_trackio):
         """trackio.log() should be called during commit when enabled."""
         mock_dist.is_initialized.return_value = False
 
@@ -156,11 +151,10 @@ class TestStatsLoggerTrackioIntegration:
         mock_trackio.log.assert_called_once_with(data, step=0)
 
     @patch("areal.utils.stats_logger.trackio")
-    @patch("areal.utils.stats_logger.wandb")
     @patch("areal.utils.stats_logger.swanlab")
     @patch("areal.utils.stats_logger.dist")
     def test_trackio_finish_called_on_close(
-        self, mock_dist, mock_swanlab, mock_wandb, mock_trackio
+        self, mock_dist, mock_swanlab, mock_trackio
     ):
         """trackio.finish() should be called during close when enabled."""
         mock_dist.is_initialized.return_value = False
@@ -175,11 +169,10 @@ class TestStatsLoggerTrackioIntegration:
         mock_trackio.finish.assert_called_once()
 
     @patch("areal.utils.stats_logger.trackio")
-    @patch("areal.utils.stats_logger.wandb")
     @patch("areal.utils.stats_logger.swanlab")
     @patch("areal.utils.stats_logger.dist")
     def test_trackio_not_logged_when_disabled(
-        self, mock_dist, mock_swanlab, mock_wandb, mock_trackio
+        self, mock_dist, mock_swanlab, mock_trackio
     ):
         """trackio.log() should NOT be called during commit when disabled."""
         mock_dist.is_initialized.return_value = False
