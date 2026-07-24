@@ -972,8 +972,10 @@ class MegatronEngineConfig:
     enable_mtp: bool = field(
         default=False,
         metadata={
-            "help": "Keep the model's Multi-Token-Prediction (MTP) head "
-            "(bridge_type=megatron-bridge only). Default False drops it.",
+            "help": "Build and train the model's Multi-Token-Prediction (MTP) head "
+            "(bridge_type=megatron-bridge only). Default False leaves it unbuilt; "
+            "the frozen head is still copied from the source into exports so they "
+            "stay complete for MTP speculative decoding.",
         },
     )
 

@@ -2839,8 +2839,10 @@ class MegatronEngine(TrainEngine):
             if processor is not None:
                 processor.save_pretrained(path)
             if self._mtp_head_dropped:
-                self._scrub_mtp_from_saved_config(path)
-                self._rebuild_index_from_saved_shards(path)
+                # The MTP head is not trained in RL, so always keep the frozen
+                # source head in the export (falls back to scrubbing it out when
+                # the source is unavailable).
+                self._splice_mtp_from_source(path, base_model_path or self.config.path)
 
         current_platform.synchronize()
         dist.barrier(group=self.cpu_group)
@@ -2927,6 +2929,192 @@ class MegatronEngine(TrainEngine):
                 len(ghosts),
                 sorted(ghosts)[:3],
             )
+
+    @staticmethod
+    def _is_mtp_key(key: str) -> bool:
+        lowered = key.lower()
+        return "mtp" in lowered or "nextn" in lowered
+
+    def _read_source_mtp_by_shard(
+        self, source_path: str
+    ) -> dict[str, dict[str, torch.Tensor]]:
+        """Load the frozen MTP tensors (mtp.*/nextn.*) from the source checkpoint,
+        grouped by the shard file that held them, so each tensor can be written
+        back into the same shard on export. Handles both sharded (index.json)
+        and single-file layouts."""
+        from safetensors import safe_open
+
+        index_path = os.path.join(source_path, "model.safetensors.index.json")
+        file_to_keys: dict[str, list[str]] = {}
+        if os.path.exists(index_path):
+            with open(index_path) as f:
+                weight_map = json.load(f)["weight_map"]
+            for key, filename in weight_map.items():
+                if self._is_mtp_key(key):
+                    file_to_keys.setdefault(filename, []).append(key)
+        else:
+            single = os.path.join(source_path, "model.safetensors")
+            if os.path.exists(single):
+                with safe_open(single, framework="pt", device="cpu") as f:
+                    for key in f.keys():
+                        if self._is_mtp_key(key):
+                            file_to_keys.setdefault("model.safetensors", []).append(key)
+
+        by_shard: dict[str, dict[str, torch.Tensor]] = {}
+        for filename, keys in file_to_keys.items():
+            file_path = os.path.join(source_path, filename)
+            if not os.path.exists(file_path):
+                continue
+            with safe_open(file_path, framework="pt", device="cpu") as f:
+                by_shard[filename] = {key: f.get_tensor(key) for key in keys}
+        return by_shard
+
+    def _write_safetensors_index(self, path: str) -> None:
+        """Create or rewrite model.safetensors.index.json to cover every shard
+        file present in ``path`` (base shards plus the spliced MTP shard)."""
+        weight_map: dict[str, str] = {}
+        total_size = 0
+        for filename in sorted(os.listdir(path)):
+            if not filename.endswith(".safetensors"):
+                continue
+            with open(os.path.join(path, filename), "rb") as f:
+                header_len = struct.unpack("<Q", f.read(8))[0]
+                header = json.loads(f.read(header_len))
+            for key, meta in header.items():
+                if key == "__metadata__":
+                    continue
+                weight_map[key] = filename
+                begin, end = meta["data_offsets"]
+                total_size += end - begin
+        index_path = os.path.join(path, "model.safetensors.index.json")
+        index: dict[str, Any] = {}
+        if os.path.exists(index_path):
+            with open(index_path) as f:
+                index = json.load(f)
+        index["weight_map"] = weight_map
+        index.setdefault("metadata", {})["total_size"] = total_size
+        with open(index_path, "w") as f:
+            json.dump(index, f, indent=2, sort_keys=True)
+
+    def _restore_mtp_config_from_source(self, path: str, source_path: str) -> None:
+        """Ensure the exported config.json keeps non-zero MTP layer counts,
+        restoring them from the source config when needed."""
+        exported = os.path.join(path, "config.json")
+        source = os.path.join(source_path, "config.json")
+        if not (os.path.exists(exported) and os.path.exists(source)):
+            return
+        with open(source) as f:
+            src_cfg = json.load(f)
+
+        wanted: dict[str, Any] = {}
+
+        def _collect(node: Any) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if (
+                        key in ("mtp_num_hidden_layers", "num_nextn_predict_layers")
+                        and value
+                    ):
+                        wanted[key] = value
+                    else:
+                        _collect(value)
+            elif isinstance(node, list):
+                for item in node:
+                    _collect(item)
+
+        _collect(src_cfg)
+        if not wanted:
+            return
+
+        with open(exported) as f:
+            exp_cfg = json.load(f)
+
+        def _restore(node: Any) -> bool:
+            changed = False
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key in wanted and not value:
+                        node[key] = wanted[key]
+                        changed = True
+                    else:
+                        changed |= _restore(value)
+            elif isinstance(node, list):
+                for item in node:
+                    changed |= _restore(item)
+            return changed
+
+        if _restore(exp_cfg):
+            with open(exported, "w") as f:
+                json.dump(exp_cfg, f, indent=2, sort_keys=True)
+
+    def _splice_mtp_from_source(self, path: str, source_path: str | None) -> None:
+        """Copy the frozen MTP head from the source checkpoint into the exported
+        checkpoint so it stays complete when the MTP head was not trained.
+
+        The bridge mirrors the source sharding, so each MTP tensor is written
+        back into the same shard file the source kept it in -- the export ends
+        up structurally identical to the source, with no extra sidecar file. If
+        the export re-sharded and a source shard is absent, those leftover MTP
+        tensors fall back to a dedicated ``model-mtp.safetensors``."""
+        from safetensors import safe_open
+        from safetensors.torch import save_file
+
+        if not source_path or not os.path.isdir(source_path):
+            self.logger.warning(
+                "MTP passthrough: source path %s unavailable; dropping MTP head "
+                "from export instead.",
+                source_path,
+            )
+            self._scrub_mtp_from_saved_config(path)
+            self._rebuild_index_from_saved_shards(path)
+            return
+
+        by_shard = self._read_source_mtp_by_shard(source_path)
+        if not by_shard:
+            self.logger.warning(
+                "MTP passthrough: no MTP tensors found in %s; dropping MTP head "
+                "from export instead.",
+                source_path,
+            )
+            self._scrub_mtp_from_saved_config(path)
+            self._rebuild_index_from_saved_shards(path)
+            return
+
+        spliced = 0
+        leftover: dict[str, torch.Tensor] = {}
+        for shard_name, mtp_tensors in by_shard.items():
+            dst = os.path.join(path, shard_name)
+            if not os.path.exists(dst):
+                leftover.update(mtp_tensors)
+                continue
+            # Merge the frozen MTP tensors into the matching exported shard and
+            # replace it atomically (write to a temp file, then rename).
+            merged: dict[str, torch.Tensor] = {}
+            with safe_open(dst, framework="pt", device="cpu") as f:
+                for key in f.keys():
+                    merged[key] = f.get_tensor(key)
+            merged.update({k: v.contiguous() for k, v in mtp_tensors.items()})
+            tmp = dst + ".tmp"
+            save_file(merged, tmp, metadata={"format": "pt"})
+            os.replace(tmp, dst)
+            spliced += len(mtp_tensors)
+
+        if leftover:
+            save_file(
+                {k: v.contiguous() for k, v in leftover.items()},
+                os.path.join(path, "model-mtp.safetensors"),
+                metadata={"format": "pt"},
+            )
+
+        self._write_safetensors_index(path)
+        self._restore_mtp_config_from_source(path, source_path)
+        self.logger.info(
+            "Spliced %d frozen MTP tensors into matching shards (%d in sidecar) "
+            "from %s.",
+            spliced,
+            len(leftover),
+            source_path,
+        )
 
     def _load_model_from_hf(self, path: str) -> None:
         assert self.model is not None, "Model is not initialized."
