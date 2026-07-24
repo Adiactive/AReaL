@@ -143,6 +143,9 @@ vllm:
   disable_sliding_window: false
   enforce_eager: true
   gdn_prefill_backend: triton
+  speculative_config:
+    method: mtp
+    num_speculative_tokens: 3
 
 
 # datasets

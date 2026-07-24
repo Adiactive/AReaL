@@ -1846,6 +1846,12 @@ class vLLMConfig:
     enable_expert_parallel: bool = False
     compilation_config: dict | None = None
     additional_config: dict | None = None
+    # Speculative decoding config passed through to vLLM's --speculative-config.
+    # For Qwen3.5/3.6 MTP draft heads use e.g.
+    # {"method": "qwen3_5_mtp", "num_speculative_tokens": 3}. The MTP head is
+    # loaded from the model checkpoint at startup and, since the training engine
+    # never syncs MTP weights, stays frozen throughout training.
+    speculative_config: dict | None = None
     no_async_scheduling: bool = False
 
     def __post_init__(self):
@@ -1856,6 +1862,9 @@ class vLLMConfig:
 
         if self.additional_config:
             self.additional_config = json.dumps(self.additional_config)
+
+        if self.speculative_config:
+            self.speculative_config = json.dumps(self.speculative_config)
 
     @staticmethod
     def build_args(

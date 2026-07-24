@@ -149,6 +149,9 @@ vllm:
   enable_expert_parallel: true
   enforce_eager: true
   gdn_prefill_backend: triton
+  speculative_config:
+    method: mtp
+    num_speculative_tokens: 3
 
 # datasets
 train_dataset:

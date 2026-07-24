@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 from typing import Any
 
+import requests
 import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
@@ -323,6 +324,10 @@ class VLLMBackend:
         """Get vLLM health check request."""
         return HttpRequest(endpoint="/health", payload={}, method="GET")
 
+    def get_metrics_request(self) -> HttpRequest:
+        """Get vLLM Prometheus metrics scrape request."""
+        return HttpRequest(endpoint="/metrics", payload={}, method="GET")
+
     def get_offload_request(self) -> HttpRequest:
         """Get vLLM offload request.
 
@@ -364,6 +369,26 @@ class VLLMBackend:
         )
 
 
+def _sum_prometheus_counter(text: str, metric: str) -> float | None:
+    """Sum every labeled series of a Prometheus counter across engines.
+
+    Matches both ``metric`` and the ``metric + "_total"`` name that
+    prometheus_client emits for counters. Returns None when the metric is
+    absent from the scrape.
+    """
+    total: float | None = None
+    for line in text.splitlines():
+        if not line or line[0] == "#":
+            continue
+        head = line.split("{", 1)[0].split(" ", 1)[0]
+        if head == metric or head == metric + "_total":
+            try:
+                total = (total or 0.0) + float(line.rsplit(" ", 1)[1])
+            except (ValueError, IndexError):
+                continue
+    return total
+
+
 class RemotevLLMEngine(InferenceEngine):
     """vLLM remote inference engine.
 
@@ -381,6 +406,9 @@ class RemotevLLMEngine(InferenceEngine):
         self.config = config
         # Pure composition - create internal engine with vLLM backend
         self._engine = RemoteInfEngine(config, VLLMBackend())
+        # Cumulative spec-decode counters at the previous export, for windowed
+        # acceptance-rate deltas.
+        self._spec_decode_prev: dict[str, float] = {}
 
     @classmethod
     def from_pretrained(
@@ -602,7 +630,65 @@ class RemotevLLMEngine(InferenceEngine):
         return self._engine.onload(tags=tags)
 
     def export_stats(self) -> dict[str, float]:
-        return stats_tracker.export_all(reduce_group=None)
+        stats = stats_tracker.export_all(reduce_group=None)
+        try:
+            stats.update(self._collect_spec_decode_stats())
+        except Exception as e:  # metrics must never interrupt training
+            logger.warning(f"Failed to collect spec-decode stats: {e}")
+        return stats
+
+    def _collect_spec_decode_stats(self) -> dict[str, float]:
+        """Scrape vLLM's ``/metrics`` for speculative-decoding counters and
+        return the acceptance stats over the window since the last export.
+
+        Returns an empty dict when speculative decoding is disabled or the
+        metrics endpoint is unavailable, so the caller stays a no-op unless a
+        draft head is actually running.
+        """
+        get_metrics = getattr(self._engine.backend, "get_metrics_request", None)
+        if get_metrics is None:
+            return {}
+        req = get_metrics()
+        totals = {"drafts": 0.0, "draft_tokens": 0.0, "accepted": 0.0}
+        found = False
+        for addr in self._engine.addresses:
+            try:
+                resp = requests.request(
+                    req.method, f"http://{addr}{req.endpoint}", timeout=3
+                )
+                if resp.status_code != 200:
+                    continue
+            except requests.exceptions.RequestException:
+                continue
+            for key, name in (
+                ("drafts", "vllm:spec_decode_num_drafts"),
+                ("draft_tokens", "vllm:spec_decode_num_draft_tokens"),
+                ("accepted", "vllm:spec_decode_num_accepted_tokens"),
+            ):
+                value = _sum_prometheus_counter(resp.text, name)
+                if value is not None:
+                    totals[key] += value
+                    found = True
+        if not found:
+            return {}
+
+        prev = self._spec_decode_prev
+        self._spec_decode_prev = totals
+        d_draft_tokens = totals["draft_tokens"] - prev.get("draft_tokens", 0.0)
+        d_accepted = totals["accepted"] - prev.get("accepted", 0.0)
+        d_drafts = totals["drafts"] - prev.get("drafts", 0.0)
+        if d_draft_tokens <= 0 or d_drafts <= 0:
+            return {}
+        # Emit companion ``__count`` keys so RolloutController.export_stats keeps
+        # these (it drops keys without a count) and, weighting by the window's
+        # draft/draft-token totals, aggregates the per-worker rates into the
+        # correct global ratios rather than a plain mean.
+        return {
+            "rollout/spec_decode/acceptance_rate": d_accepted / d_draft_tokens,
+            "rollout/spec_decode/acceptance_rate__count": d_draft_tokens,
+            "rollout/spec_decode/mean_accepted_len": d_accepted / d_drafts,
+            "rollout/spec_decode/mean_accepted_len__count": d_drafts,
+        }
 
     @classmethod
     def as_controller(cls, config: InferenceEngineConfig, scheduler: Scheduler):

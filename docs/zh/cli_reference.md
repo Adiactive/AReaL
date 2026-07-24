@@ -685,6 +685,7 @@ https://docs.vllm.ai/en/stable/api/index.html for detailed documentation.
 | `enable_expert_parallel`       | boolean                | `False`                                                             | -                                                                                       |
 | `compilation_config`           | `dict` \| None         | `None`                                                              | -                                                                                       |
 | `additional_config`            | `dict` \| None         | `None`                                                              | -                                                                                       |
+| `speculative_config`           | `dict` \| None         | `None`                                                              | -                                                                                       |
 | `no_async_scheduling`          | boolean                | `False`                                                             | -                                                                                       |
 
 (section-train-dataset)=
