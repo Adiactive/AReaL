@@ -5,6 +5,7 @@ import gc
 import torch
 
 import areal.utils.logging as logging
+import areal.utils.torch_npu_compat  # noqa: F401  # torch_npu shims, applied on import
 
 from .platform import Platform
 
