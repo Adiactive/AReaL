@@ -38,9 +38,17 @@ RUN apt-get update -y && \
     python3 -m pip install -U pip "setuptools==80.10.2" uv && \
     python3 -m pip cache purge
 
+# Sleep/wake bugfixes for the pinned vLLM / vllm-ascend releases above; see
+# patches/README.md for provenance. Bump alongside VLLM_TAG / VLLM_ASCEND_BRANCH.
+COPY patches/vllm.v0.23.0.patch patches/vllm-ascend.v0.23.0.patch /areal-workspace/patches/
+
 # Install vLLM + vllm-ascend (torch-npu comes from vllm-ascend requirements.txt).
 # The torch-npu 2.10.0.post2 P2P regression is worked around at runtime in
 # areal/utils/torch_npu_compat.py.
+# Patches are applied after each editable install, never before: a dirty tree makes
+# setuptools-scm report 0.23.1.dev0 instead of 0.23.0, which flips vllm-ascend's
+# vllm_version_is("0.23.0") gates onto their 0.24+ paths. The recorded version is
+# asserted so any regression fails the build, not the first rollout of a training run.
 RUN export PIP_EXTRA_INDEX_URL=https://triton-ascend.osinfra.cn/pypi/simple/ && \
     export PIP_TRUSTED_HOST=triton-ascend.osinfra.cn && \
     export SOC_VERSION=${SOC_VERSION} && \
@@ -51,10 +59,13 @@ RUN export PIP_EXTRA_INDEX_URL=https://triton-ascend.osinfra.cn/pypi/simple/ && 
     git clone --depth 1 --branch ${VLLM_ASCEND_BRANCH} https://github.com/vllm-project/vllm-ascend.git /areal-workspace/vllm-ascend && \
     cd /areal-workspace/vllm && \
     VLLM_TARGET_DEVICE=empty pip install -v -e . && \
+    git apply -v /areal-workspace/patches/vllm.v0.23.0.patch && \
+    python3 -c "import sys, os; sys.path.insert(0, 'vllm'); import _version; want = os.environ['VLLM_TAG'].removeprefix('v'); assert _version.__version__ == want, f'vllm reports {_version.__version__}, expected {want}'" && \
     pip uninstall -y triton && \
     cd /areal-workspace/vllm-ascend && \
     pip install -r requirements.txt && \
     COMPILE_CUSTOM_KERNELS=1 pip install --no-build-isolation --no-deps -v -e . && \
+    git apply -v /areal-workspace/patches/vllm-ascend.v0.23.0.patch && \
     python3 -m pip cache purge
 
 # Install Megatron & MindSpeed (megatron-core lives inside the MindSpeed tree).

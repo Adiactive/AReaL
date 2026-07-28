@@ -1,0 +1,47 @@
+Backport of vllm-project/vllm#44483 onto vLLM v0.23.0.
+
+    [Bugfix] Fix illegal memory access from a forward during a partial wake_up
+    https://github.com/vllm-project/vllm/pull/44483
+    Merged upstream 2026-06-24, after the v0.23.0 tag.
+
+A partial wake_up(tags=["weights"]) resumed the scheduler and let DP ranks run dummy
+batches while the KV cache was still asleep, faulting on non-resident memory.
+
+Matches the final upstream form on main. Upstream's merge commit (93ec645) landed a
+broken conflict resolution and was corrected afterwards, so this follows main rather
+than that commit. log_iteration_details is the v0.23.0 name for what main later
+renamed to capture_iteration_details.
+
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index 08c814ab3..59d82a8f2 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -775,8 +775,10 @@ class EngineCore:
+         if tags is None or tags:
+             self.model_executor.wake_up(tags)
+ 
+-        # Resume scheduling (applies to all levels)
+-        self.resume_scheduler()
++        # Partial wakes intentionally keep the remaining allocations asleep.
++        # Resume scheduling only once all executor memory is resident again.
++        if not self.model_executor.is_sleeping:
++            self.resume_scheduler()
+ 
+     def is_sleeping(self) -> bool:
+         """Check if engine is sleeping at any level."""
+@@ -1893,10 +1895,11 @@ class DPEngineCoreProc(EngineCoreProc):
+                     # All engines are idle.
+                     continue
+ 
+-                # We are in a running state and so must execute a dummy pass
+-                # if the model didn't execute any ready requests.
+-                with self.log_iteration_details(None):
+-                    self.execute_dummy_batch()
++                # Execute a dummy pass when no ready requests ran, unless the
++                # engine is sleeping.
++                elif not self.model_executor.is_sleeping:
++                    with self.log_iteration_details(None):
++                        self.execute_dummy_batch()
+ 
+             # 3) All-reduce operation to determine global unfinished reqs.
+             self.engines_running = self._has_global_unfinished_reqs(
