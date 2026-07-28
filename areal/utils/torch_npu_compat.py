@@ -4,7 +4,7 @@
 
 Applied on import; a no-op when torch_npu is absent (CUDA/CPU hosts). Import
 this BEFORE ``mindspeed.megatron_adaptor`` so the shims are in place before
-MindSpeed touches the affected symbols.
+MindSpeed re-binds the affected symbols.
 """
 
 import os
@@ -27,29 +27,6 @@ GROUPED_P2P_ENV = "AREAL_NPU_GROUPED_P2P"
 # Upstream fix: https://gitcode.com/Ascend/pytorch/pull/42579
 GROUPED_P2P_BROKEN_SINCE = "2.10.0.post2"
 GROUPED_P2P_FIXED_IN = None  # set once a wheel carrying the fix is validated
-
-
-def _apply_unsupported_dtype() -> None:
-    try:
-        import torch
-        import torch_npu
-    except ImportError:
-        return
-
-    # post3 relocated `unsupported_dtype` out of the top-level namespace, but
-    # MindSpeed reads `torch_npu.unsupported_dtype` at import -- re-expose it.
-    if not hasattr(torch_npu, "unsupported_dtype"):
-        try:
-            from torch_npu._init.registry.backend import unsupported_dtype as _ud
-        except Exception:  # noqa: BLE001
-            _ud = [
-                torch.quint8,
-                torch.quint4x2,
-                torch.quint2x4,
-                torch.qint32,
-                torch.qint8,
-            ]
-        torch_npu.unsupported_dtype = list(_ud)
 
 
 def grouped_p2p_broken(torch_npu_version: str) -> bool:
@@ -146,7 +123,6 @@ def _apply_grouped_p2p_gate() -> None:
 
 
 def _apply() -> None:
-    _apply_unsupported_dtype()
     _apply_grouped_p2p_gate()
 
 

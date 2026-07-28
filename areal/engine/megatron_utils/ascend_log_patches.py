@@ -2,13 +2,12 @@
 
 """Quiet known-benign NPU log spam (NPU-only; no-op elsewhere).
 
-Four unrelated, harmless sources flood the per-rank logs, each filtered/guarded
+Three unrelated, harmless sources flood the per-rank logs, each filtered/guarded
 below without editing the installed packages:
 
 1. Transformers 5.5.4's image-processor alias warning on non-``Fast`` symbols.
-2. triton-ascend's JIT ``Please DO NOT tune args`` print on every kernel compile.
-3. MindSpeed's ``tp_group is None`` DeprecationWarning, repeated per TP layer.
-4. torch_npu's MSTX ``range_end`` TypeError from no-id native calls, per op-range.
+2. MindSpeed's ``tp_group is None`` DeprecationWarning, repeated per TP layer.
+3. torch_npu's MSTX ``range_end`` TypeError from no-id native calls, per op-range.
 """
 
 from __future__ import annotations
@@ -19,8 +18,6 @@ import warnings
 import areal.utils.logging as logging
 
 logger = logging.getLogger("AscendLogPatches")
-
-_TRITON_NOISE = "Please DO NOT tune args"
 
 
 def _silence_transformers_image_processing_alias_noise() -> None:
@@ -95,35 +92,6 @@ class _TransformersImageAliasNoiseFilter(stdlib_logging.Filter):
         return name.endswith("Fast")
 
 
-def _silence_triton_tune_args_print() -> None:
-    import importlib
-
-    patched = []
-    # triton.runtime.jit is where the active JITFunction.run resolves print;
-    # triton_patch is patched too in case a code path uses that namespace.
-    for modname in ("triton.runtime.jit", "triton.triton_patch.runtime.jit"):
-        try:
-            mod = importlib.import_module(modname)
-        except Exception:
-            continue
-        if getattr(mod, "_areal_tune_warning_silenced", False):
-            continue
-        _orig_print = getattr(mod, "print", print)
-
-        def _filtered_print(*args, _orig=_orig_print, **kwargs):
-            if args and isinstance(args[0], str) and _TRITON_NOISE in args[0]:
-                return
-            return _orig(*args, **kwargs)
-
-        mod.print = _filtered_print
-        mod._areal_tune_warning_silenced = True
-        patched.append(modname)
-    if patched:
-        logger.info(
-            "Silenced triton-ascend tune-args log spam in: %s", ", ".join(patched)
-        )
-
-
 def _silence_tp_group_deprecation_warning() -> None:
     warnings.filterwarnings(
         "ignore",
@@ -146,8 +114,11 @@ def _silence_mstx_range_end_error() -> None:
     _orig_range_end = cls.range_end
 
     def _guarded_range_end(range_id=None, domain="default"):
-        # The native MSTX emitter closes ranges via range_end() with no id;
-        # drop those quietly, forward valid ids to the original.
+        # The native MSTX emitter closes ranges via range_end() with no id.
+        # torch_npu's own non-int guard cannot catch that: the call fails at
+        # argument binding (range_id is positional-required) before the guard
+        # runs, and its @_no_exception_func wrapper logs the TypeError per
+        # op-range. The default here absorbs the no-arg call instead.
         if not isinstance(range_id, int):
             return
         return _orig_range_end(range_id, domain)
@@ -166,7 +137,6 @@ def _apply() -> None:
 
     if not is_npu_available:
         return
-    _silence_triton_tune_args_print()
     _silence_tp_group_deprecation_warning()
     _silence_mstx_range_end_error()
 
