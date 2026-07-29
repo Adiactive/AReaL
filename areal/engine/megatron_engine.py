@@ -3091,16 +3091,14 @@ class MegatronEngine(TrainEngine):
             if not os.path.exists(dst):
                 leftover.update(mtp_tensors)
                 continue
-            # Merge the frozen MTP tensors into the matching exported shard and
-            # replace it atomically (write to a temp file, then rename).
+            # Clone the mmap-backed destination tensors before overwriting the
+            # same shard in place. This avoids rename and chmod operations.
             merged: dict[str, torch.Tensor] = {}
             with safe_open(dst, framework="pt", device="cpu") as f:
                 for key in f.keys():
-                    merged[key] = f.get_tensor(key)
+                    merged[key] = f.get_tensor(key).clone()
             merged.update({k: v.contiguous() for k, v in mtp_tensors.items()})
-            tmp = dst + ".tmp"
-            save_file(merged, tmp, metadata={"format": "pt"})
-            os.replace(tmp, dst)
+            save_file(merged, dst, metadata={"format": "pt"})
             spliced += len(mtp_tensors)
 
         if leftover:
