@@ -27,7 +27,23 @@ rollout:
   consumer_batch_size: ${train_dataset.batch_size}
   max_head_offpolicyness: 4
   enable_rollout_tracing: false
-  scheduling_spec: ${actor.scheduling_spec}
+  scheduling_spec:
+    - task_type: worker
+      port_count: 2
+      gpu: 1
+      cpu: 4
+      mem: 32
+      cmd: python3 -m areal.infra.rpc.rpc_server
+      env_vars:
+        TASK_QUEUE_ENABLE: "1"
+        HCCL_EXEC_TIMEOUT: "14400"
+        ACL_DEVICE_SYNC_TIMEOUT: "14400"
+        HCCL_EVENT_TIMEOUT: "14500"
+        HCCL_ASYNC_ERROR_HANDLING: "0"
+        ACL_STREAM_TIMEOUT: "14500000"
+        HCCL_CONNECT_TIMEOUT: "7200"
+        PYTORCH_NPU_ALLOC_CONF: "expandable_segments:True"
+        TORCH_COMPILE_DISABLE: "0"
   fileroot: ${cluster.fileroot}
   tokenizer_path: ${tokenizer_path}
   dump_to_file: true
@@ -40,10 +56,10 @@ gconfig:
   temperature: 1.0
 
 actor:
-  backend: "megatron:d2p4t1"
+  backend: "megatron:d4p1t2"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: Qwen/Qwen3-VL-2B-Instruct
+  path: Qwen/Qwen3.5-2B
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: true
@@ -95,8 +111,7 @@ actor:
       mem: 32
       cmd: python3 -m areal.infra.rpc.rpc_server
       env_vars:
-        VLLM_USE_V1: "1"
-        TASK_QUEUE_ENABLE: "1"
+        TASK_QUEUE_ENABLE: "2"
         HCCL_EXEC_TIMEOUT: "14400"
         ACL_DEVICE_SYNC_TIMEOUT: "14400"
         HCCL_EVENT_TIMEOUT: "14500"
