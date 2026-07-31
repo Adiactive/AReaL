@@ -15,7 +15,7 @@
 # This file is a part of the AReaL project.
 #
 
-FROM quay.io/ascend/cann:9.0.0-910b-ubuntu22.04-py3.11
+FROM quay.io/ascend/cann:9.0.1-910b-ubuntu22.04-py3.11
 
 ARG MEGATRON_TAG=core_v0.16.1
 ARG MINDSPEED_BRANCH=core_r0.16.0
@@ -31,7 +31,7 @@ ARG SOC_VERSION=ascend910b1
 # System build deps (the clean CANN base ships none) + pip/uv bootstrap.
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
-        gcc g++ cmake libnuma-dev wget git curl jq vim build-essential gawk clang-15 && \
+        gcc g++ cmake libnuma-dev wget git curl jq vim tmux build-essential gawk clang-15 && \
     update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 20 && \
     update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-15 20 && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
@@ -52,7 +52,7 @@ COPY patches/vllm.v0.23.0.patch patches/vllm-ascend.v0.23.0.patch /areal-workspa
 RUN export PIP_EXTRA_INDEX_URL=https://triton-ascend.osinfra.cn/pypi/simple/ && \
     export PIP_TRUSTED_HOST=triton-ascend.osinfra.cn && \
     export SOC_VERSION=${SOC_VERSION} && \
-    export LD_LIBRARY_PATH=${ASCEND_INSTALL_PATH}/cann-9.0.0/aarch64-linux/devlib/linux/aarch64:$LD_LIBRARY_PATH && \
+    export LD_LIBRARY_PATH=${ASCEND_INSTALL_PATH}/cann-9.0.1/aarch64-linux/devlib/linux/aarch64:$LD_LIBRARY_PATH && \
     . ${ASCEND_INSTALL_PATH}/ascend-toolkit/set_env.sh && \
     . ${ASCEND_INSTALL_PATH}/nnal/atb/set_env.sh && \
     git clone --depth 1 --branch ${VLLM_TAG} https://github.com/vllm-project/vllm.git /areal-workspace/vllm && \

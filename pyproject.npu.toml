@@ -135,8 +135,8 @@ dependencies = [
     "trackio",
     "colorama",
     "colorlog",
-    "swanboard==0.1.9b1",
-    "swanlab[dashboard]==0.6.12",
+    "swanboard==0.1.9b3",
+    "swanlab[dashboard]==0.7.20",
 
     # Distributed computing
     "ray[default]>=2.53.0",

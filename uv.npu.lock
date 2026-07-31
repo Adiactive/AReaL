@@ -383,8 +383,8 @@ requires-dist = [
     { name = "setproctitle" },
     { name = "setuptools", specifier = ">=77.0.3,<80" },
     { name = "starlette", specifier = "<1.3" },
-    { name = "swanboard", specifier = "==0.1.9b1" },
-    { name = "swanlab", extras = ["dashboard"], specifier = "==0.6.12" },
+    { name = "swanboard", specifier = "==0.1.9b3" },
+    { name = "swanlab", extras = ["dashboard"], specifier = "==0.7.20" },
     { name = "tabulate" },
     { name = "tenacity" },
     { name = "tensorboardx" },
@@ -3211,11 +3211,11 @@ wheels = [
 
 [[package]]
 name = "peewee"
-version = "4.0.6"
+version = "3.19.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9f/09/a3b2a32ce498f405dce4320267e99b1b076c1ea39ad01151a353bc7f81d7/peewee-4.0.6.tar.gz", hash = "sha256:ea2f78f24ff9e3660281dc5b0be8bc00d9a9514bdc40c98e416fcd042b66ac6a", size = 724591, upload-time = "2026-05-20T13:18:17.26Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/b0/79462b42e89764998756e0557f2b58a15610a5b4512fbbcccae58fba7237/peewee-3.19.0.tar.gz", hash = "sha256:f88292a6f0d7b906cb26bca9c8599b8f4d8920ebd36124400d0cbaaaf915511f", size = 974035, upload-time = "2026-01-07T17:24:59.597Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/6a/e1455b94ee48f5666f2e7831b6247098794bfe9747da457111be4d0bea10/peewee-4.0.6-py3-none-any.whl", hash = "sha256:5fa665913c410f0b5faef1469ed0aa9eceb9fef262665ebbb6f29408f826eeeb", size = 146222, upload-time = "2026-05-20T13:18:15.694Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/41/19c65578ef9a54b3083253c68a607f099642747168fe00f3a2bceb7c3a34/peewee-3.19.0-py3-none-any.whl", hash = "sha256:de220b94766e6008c466e00ce4ba5299b9a832117d9eb36d45d0062f3cfd7417", size = 411885, upload-time = "2026-01-07T17:24:58.33Z" },
 ]
 
 [[package]]
@@ -4756,7 +4756,7 @@ wheels = [
 
 [[package]]
 name = "swanboard"
-version = "0.1.9b1"
+version = "0.1.9b3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4768,19 +4768,16 @@ dependencies = [
     { name = "uvicorn", version = "0.33.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "uvicorn", version = "0.48.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'aarch64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c3/df/d9019fdc9d5133423a561412f3e6d10c3e0138d9089ebfcd77ec0c951c24/swanboard-0.1.9b1.tar.gz", hash = "sha256:4502c2ca83d696f50e2be8af1f5b1c4aeecc919a91e8ef3735c23d4ffd235c6e", size = 1181675, upload-time = "2025-10-10T14:50:10.656Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/6f/dbdf80756b2263e9c0d52ac835f8f112b890a020ce3ce70c99e3e0fdfbb6/swanboard-0.1.9b3.tar.gz", hash = "sha256:df12e54773ac361c685e042c7b9850e21ca70ad5759e0a094cf52e646fcfb853", size = 1166670, upload-time = "2026-02-27T15:50:07.262Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/30/8598b8fb70e0e73514481e180f34937282fd9703508b66c8967f7ec18281/swanboard-0.1.9b1-py3-none-any.whl", hash = "sha256:3cb1e1a2d1592676c62f71c8af994474f9a1985b8f372247975cc283faaed748", size = 750402, upload-time = "2025-10-10T14:50:09.133Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/67/50d80015211437a2e3f1183fa9c6c0f10196360454af79245f7a7f9ae06b/swanboard-0.1.9b3-py3-none-any.whl", hash = "sha256:39461f2f0884d0cf7ef2e6cc30640c1b2cb2e1ec0d1db5feff3e0433b8d051fd", size = 751749, upload-time = "2026-02-27T15:50:05.982Z" },
 ]
 
 [[package]]
 name = "swanlab"
-version = "0.6.12"
+version = "0.7.20"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "boto3", version = "1.43.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "boto3", version = "1.43.22", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'aarch64' and sys_platform == 'linux')" },
-    { name = "botocore", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "click", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "nvidia-ml-py", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "platformdirs", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4795,9 +4792,9 @@ dependencies = [
     { name = "urllib3", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "wrapt", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/49/14/4ce092270a9d5c4cabf8badb400c96e2bf740de8f668d4a9d6d56ac15130/swanlab-0.6.12.tar.gz", hash = "sha256:76faf7f8e7aa5fb9a1f5af6360b57a558425cbe4d5a2b588cc7322b7b5e8723c", size = 438210, upload-time = "2025-10-17T05:27:34.244Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/4d/c73641e7d1e72eaa538e5be2bd26cab2563624fd02975deea29b7ca442e3/swanlab-0.7.20.tar.gz", hash = "sha256:5a6a188b5e445f191f2f8455e6231be071515caf2de661e08c1019fc2ddd63f8", size = 504198, upload-time = "2026-06-09T13:47:40.234Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/cc/f05935e7e7fbe555552b66e6a4478b093f8d8a4472cac0fcf549efa42a9b/swanlab-0.6.12-py3-none-any.whl", hash = "sha256:193dbdf8b25a48cc84e00b131d3650e3b00cc0d8d48d374a7890208be4cb5db0", size = 305777, upload-time = "2025-10-17T05:27:32.572Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/6d/305510c0562366f16fe700194f6bc63285122d6844b7ca71872974c61e17/swanlab-0.7.20-py3-none-any.whl", hash = "sha256:1dbc33457aa3d41e5502f0dc697cec6e3cc7906b47c805ba2511c6ed8e99ce3a", size = 372069, upload-time = "2026-06-09T13:47:38.944Z" },
 ]
 
 [package.optional-dependencies]
