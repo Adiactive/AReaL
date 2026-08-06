@@ -362,15 +362,6 @@ def packed_context_parallel_forward(
     has_vision_inputs = is_vision_model and any(
         key in input_ for key in _VLM_FORWARD_KEYS
     )
-    if (
-        has_vision_inputs
-        and use_model_packed_seq
-        and mpu.get_context_parallel_world_size() > 1
-    ):
-        raise NotImplementedError(
-            "Model-owned THD with context parallelism currently supports "
-            "text-only microbatches; vision inputs are not supported yet."
-        )
     # Padded-vs-packed routing is keyed on the MODEL type:
     # - VLM models cannot consume the wrapper-packed [1, total_len] layout
     #   (their internal packing needs a per-sequence 2D mask — mbridge

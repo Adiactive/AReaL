@@ -19,12 +19,13 @@ FROM quay.io/ascend/cann:9.0.1-a3-ubuntu22.04-py3.11
 
 ARG MEGATRON_TAG=core_v0.16.1
 ARG MINDSPEED_BRANCH=core_r0.16.0
-ARG MINDSPEED_COMMIT=edd30e450dd64fe2d00fa5b963ab868a94b174f6
+ARG MINDSPEED_COMMIT=79626c1380b78f5cea8a971f265a49f96b04d416
 # Must be pinned to this specific commit: megatron-core 0.16.x compatible. The v0.4.x tags pin
 # megatron-core 0.17.1, which MindSpeed core_r0.16.0 does not support.
 ARG MEGATRON_BRIDGE_COMMIT=de93536e
 ARG VLLM_TAG=v0.23.0
 ARG VLLM_ASCEND_BRANCH=releases/v0.23.0
+ARG VLLM_ASCEND_COMMIT=eaefc536d4475808e18b0c12b42c7710bc4bccb9
 ARG ASCEND_INSTALL_PATH=/usr/local/Ascend
 ARG SOC_VERSION=ascend910_9391
 
@@ -56,7 +57,8 @@ RUN export PIP_EXTRA_INDEX_URL=https://triton-ascend.osinfra.cn/pypi/simple/ && 
     . ${ASCEND_INSTALL_PATH}/ascend-toolkit/set_env.sh && \
     . ${ASCEND_INSTALL_PATH}/nnal/atb/set_env.sh && \
     git clone --depth 1 --branch ${VLLM_TAG} https://github.com/vllm-project/vllm.git /areal-workspace/vllm && \
-    git clone --depth 1 --branch ${VLLM_ASCEND_BRANCH} https://github.com/vllm-project/vllm-ascend.git /areal-workspace/vllm-ascend && \
+    git clone --branch ${VLLM_ASCEND_BRANCH} https://github.com/vllm-project/vllm-ascend.git /areal-workspace/vllm-ascend && \
+    git -C /areal-workspace/vllm-ascend checkout ${VLLM_ASCEND_COMMIT} && \
     cd /areal-workspace/vllm && \
     VLLM_TARGET_DEVICE=empty pip install -v -e . && \
     git apply -v /areal-workspace/patches/vllm.v0.23.0.patch && \
