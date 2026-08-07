@@ -20,6 +20,7 @@ from megatron.core.transformer import TransformerConfig
 from transformers import AutoConfig, PretrainedConfig
 
 from areal.api.cli_args import MegatronEngineConfig
+from areal.engine.core.model import is_valid_vision_model
 from areal.infra.platforms import is_npu_available
 from areal.models.mcore.bailing_moe import (
     hf_to_mcore_config_bailing_moe,
@@ -360,6 +361,40 @@ def make_mcore_model(
 
         provider.freeze_vision_model = mcore_config.freeze_vision_model
         provider.freeze_vision_projection = mcore_config.freeze_vision_projection
+
+        from megatron.bridge.models.gpt_provider import (
+            default_layer_spec,
+            local_layer_spec,
+        )
+
+        uses_local_layer_spec = (
+            use_lora
+            and is_npu_available
+            and provider.transformer_layer_spec is default_layer_spec
+            and not getattr(provider, "num_moe_experts", None)
+            and not getattr(provider, "fp8", None)
+            and not getattr(provider, "use_transformer_engine_full_layer_spec", False)
+            and not is_valid_vision_model(hf_config.model_type)
+        )
+        if uses_local_layer_spec:
+            # Megatron-Bridge applies LoRA to fused TE QKV/FC1 layers by asking
+            # the base layer for its normalized input via `return_layernorm_output`.
+            # MindSpeed's TELayerNormColumnParallelLinear does not implement that
+            # contract and only returns `(linear_output, bias)`. The generic local
+            # GPT spec keeps normalization separate and uses MCore row/column
+            # linears, so LoRA consumes the correct normalized activation.
+            provider.transformer_layer_spec = local_layer_spec
+            logger.info(
+                "Using the local Megatron GPT layer spec for %s LoRA on NPU.",
+                hf_config.architectures,
+            )
+        elif use_lora and is_npu_available:
+            logger.warning(
+                "Keeping transformer layer spec %r for NPU LoRA because the generic "
+                "local GPT spec cannot safely replace MoE, FP8/full-TE, vision, or "
+                "custom model blocks.",
+                provider.transformer_layer_spec,
+            )
 
         if (
             hasattr(tf_config, "pipeline_model_parallel_layout")

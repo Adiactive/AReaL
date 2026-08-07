@@ -162,12 +162,6 @@ def _register_runtime_lora_name(
     requests = serving_models.lora_requests
     runtime_lora_path = _infer_runtime_lora_path(serving_models, lora_name, lora_int_id)
 
-    # Keep at most one public name per adapter id so /v1/models and request
-    # routing reflect the current versioned adapter name.
-    for name, request in list(requests.items()):
-        if getattr(request, "lora_int_id", None) == lora_int_id and name != lora_name:
-            del requests[name]
-
     lora_request = LoRARequest(
         lora_name=lora_name,
         lora_int_id=lora_int_id,
@@ -175,9 +169,11 @@ def _register_runtime_lora_name(
     )
     if base_model_name is not None:
         lora_request.base_model_name = base_model_name
-    requests[lora_name] = lora_request
+    # Keep previous versioned names routable for requests admitted before the
+    # adapter was updated. Versions can be bounded once request draining is tracked.
+    requests[lora_request.lora_name] = lora_request
     logger.info(
-        "Registered runtime LoRA adapter name '%s' for adapter id %s",
+        "Registered runtime LoRA adapter alias '%s' for adapter id %s",
         lora_name,
         lora_int_id,
     )

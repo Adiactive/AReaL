@@ -2162,13 +2162,25 @@ class MegatronEngine(TrainEngine):
 
         fut = self.rollout_engine.update_weights_from_distributed(meta, param_specs)
 
+        # vLLM's LoRA receiver copies every tensor to CPU immediately after a
+        # synchronous receive.  Queueing the entire adapter as asynchronous
+        # HCCL broadcasts can fill Ascend's work queue while the receiver is
+        # blocked on those NPU-to-CPU copies.  Send NPU LoRA tensors in
+        # lockstep; keep the existing pipelined path for CUDA/full weights.
+        synchronous_lora_broadcast = (
+            self.config.use_lora
+            and getattr(current_platform, "device_type", None) == "npu"
+        )
         handles = []
         for _, param in converted_named_tensors:
-            handles.append(
-                dist.broadcast(
-                    param.data, 0, group=self.weight_update_group, async_op=True
-                )
+            handle = dist.broadcast(
+                param.data,
+                0,
+                group=self.weight_update_group,
+                async_op=not synchronous_lora_broadcast,
             )
+            if handle is not None:
+                handles.append(handle)
         for handle in handles:
             handle.wait()
 
