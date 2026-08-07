@@ -104,10 +104,12 @@ class RayBackendWorkerProcessManager:
         group_key: tuple[str, str],
         backend: str,
         server_args: dict[str, Any],
+        env_overrides: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         server_args = server_args.copy()
         base_env = os.environ.copy()
         base_env.update(self.env_vars)
+        base_env.update(env_overrides or {})
         if backend == "sglang":
             from areal.api.cli_args import SGLangConfig
             from areal.engine.sglang_remote import SGLangBackend
@@ -333,7 +335,11 @@ class RayWorkerProcessLauncher:
         return statuses
 
     def start_backend_worker(
-        self, group_key: tuple[str, str], backend: str, server_args: dict[str, Any]
+        self,
+        group_key: tuple[str, str],
+        backend: str,
+        server_args: dict[str, Any],
+        env_overrides: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         if self.backend_process_manager is None:
             self.backend_process_manager = RayBackendWorkerProcessManager(
@@ -346,7 +352,7 @@ class RayWorkerProcessLauncher:
                 self.host,
             )
         return self.backend_process_manager.start_backend_worker(
-            group_key, backend, server_args
+            group_key, backend, server_args, env_overrides
         )
 
     def _stop_processes(self, processes: list[tuple[str, Any]]) -> None:
@@ -524,9 +530,12 @@ class RayMultiNodeRolloutCoordinator:
             worker_info, backend, server_args
         )
         backend_worker_group_key = (worker_info.worker.id, engine_name)
+        env_overrides = (
+            worker_info.spec.env_vars.copy() if worker_info.spec is not None else {}
+        )
         refs = [
             launcher.start_backend_worker.remote(
-                backend_worker_group_key, backend, args
+                backend_worker_group_key, backend, args, env_overrides
             )
             for launcher, args in zip(
                 worker_info.launchers[1:], worker_args, strict=True

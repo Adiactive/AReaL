@@ -2,6 +2,7 @@
 
 import gc
 import sys
+import types
 
 import pytest
 import ray
@@ -13,6 +14,7 @@ from areal.api.cli_args import (
     SchedulingSpec,
     SchedulingStrategy,
     SchedulingStrategyType,
+    vLLMConfig,
 )
 from areal.infra.scheduler.exceptions import (
     WorkerCreationError,
@@ -339,6 +341,143 @@ def test_launcher_actor_starts_and_stops_worker_processes(tmp_path, local_ray_cl
         "actor/1": {"exists": False, "returncode": None},
     }
     ray.kill(launcher, no_restart=True)
+
+
+def test_backend_worker_launch_env_overrides_launcher_env(monkeypatch, tmp_path):
+    """Test backend launch uses role env while retaining node-local devices."""
+    captured = {}
+
+    class FakeVLLMBackend:
+        @staticmethod
+        def build_server_env(base_env):
+            return base_env.copy()
+
+    fake_vllm_remote = types.ModuleType("areal.engine.vllm_remote")
+    fake_vllm_remote.VLLMBackend = FakeVLLMBackend
+    monkeypatch.setitem(sys.modules, "areal.engine.vllm_remote", fake_vllm_remote)
+    monkeypatch.setattr(
+        vLLMConfig,
+        "build_cmd_from_args",
+        staticmethod(lambda _: ["fake-vllm-server"]),
+    )
+
+    class FakeProcess:
+        pid = 1234
+        returncode = None
+
+        @staticmethod
+        def poll():
+            return None
+
+    def fake_run_with_streaming_logs(cmd, log_file, merged_log, role, *, env):
+        captured.update(cmd=cmd, env=env)
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        ray_scheduler, "run_with_streaming_logs", fake_run_with_streaming_logs
+    )
+    monkeypatch.setattr(ray_scheduler.time, "sleep", lambda _: None)
+
+    launcher_env = {
+        "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:True",
+        "ACTOR_ONLY": "1",
+    }
+    manager = ray_scheduler.RayBackendWorkerProcessManager(
+        role="actor",
+        log_file=str(tmp_path / "actor.log"),
+        merged_log=str(tmp_path / "merged.log"),
+        device_control_env_var="ASCEND_RT_VISIBLE_DEVICES",
+        env_vars=launcher_env,
+        visible_devices=["4", "5"],
+        host="worker-node",
+    )
+
+    manager.start_backend_worker(
+        group_key=("rollout/0", "rollout/0"),
+        backend="vllm",
+        server_args={"node_rank": 1},
+        env_overrides={
+            "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:False",
+            "ROLLOUT_ONLY": "1",
+            "ASCEND_RT_VISIBLE_DEVICES": "0,1",
+        },
+    )
+
+    assert captured["cmd"] == ["fake-vllm-server"]
+    assert captured["env"]["PYTORCH_NPU_ALLOC_CONF"] == "expandable_segments:False"
+    assert captured["env"]["ACTOR_ONLY"] == "1"
+    assert captured["env"]["ROLLOUT_ONLY"] == "1"
+    assert captured["env"]["ASCEND_RT_VISIBLE_DEVICES"] == "4,5"
+    assert launcher_env["PYTORCH_NPU_ALLOC_CONF"] == "expandable_segments:True"
+
+
+@pytest.mark.asyncio
+async def test_prepare_launch_server_forwards_rollout_env(monkeypatch):
+    """Test multi-node backend workers receive the rollout scheduling env."""
+
+    class FakeRemoteMethod:
+        def __init__(self):
+            self.calls = []
+
+        def remote(self, *args):
+            self.calls.append(args)
+
+            async def complete():
+                return {}
+
+            return complete()
+
+    class FakeLauncher:
+        def __init__(self):
+            self.start_backend_worker = FakeRemoteMethod()
+
+    secondary_launcher = FakeLauncher()
+    rollout_env = {
+        "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:False",
+        "TORCH_COMPILE_DISABLE": "0",
+    }
+    worker_info = RayWorkerInfo(
+        worker=Worker(
+            id="rollout/0",
+            ip="127.0.0.1",
+            worker_ports=["10000"],
+            engine_ports=[],
+        ),
+        role="rollout",
+        task_index=0,
+        launchers=[object(), secondary_launcher],
+        spec=SchedulingSpec(cpu=1, gpu=16, mem=1, env_vars=rollout_env),
+    )
+    coordinator = object.__new__(ray_scheduler.RayMultiNodeRolloutCoordinator)
+    coordinator.startup_timeout = 1.0
+    coordinator._rollout_inference_backend = "vllm"
+
+    async def fake_build_multi_node_server_args(worker_info, backend, server_args):
+        return ({**server_args, "node_rank": 0}, [{"node_rank": 1}])
+
+    monkeypatch.setattr(
+        coordinator,
+        "_build_multi_node_server_args",
+        fake_build_multi_node_server_args,
+    )
+
+    result = await coordinator.prepare_launch_server(
+        worker_info,
+        engine_name="rollout/0",
+        kwargs={"server_args": {"model": "test-model"}},
+    )
+
+    assert result["server_args"] == {"model": "test-model", "node_rank": 0}
+    assert secondary_launcher.start_backend_worker.calls == [
+        (
+            ("rollout/0", "rollout/0"),
+            "vllm",
+            {"node_rank": 1},
+            rollout_env,
+        )
+    ]
+    forwarded_env = secondary_launcher.start_backend_worker.calls[0][3]
+    assert forwarded_env is not rollout_env
 
 
 def test_create_workers_uses_real_ray_launchers_and_tracks_state(
