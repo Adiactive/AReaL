@@ -995,56 +995,79 @@ class SlurmScheduler(Scheduler):
                 )
 
             target_workers = self._workers[colocate_role]
-            if num_workers != len(target_workers):
-                raise WorkerCreationError(
-                    role,
-                    "Replica count mismatch",
-                    f"Colocated role must have same replica count as target "
-                    f"({num_workers} != {len(target_workers)})",
+            if num_workers == len(target_workers):
+                # Check if fork mode is enabled
+                if strategy.fork:
+                    # Fork mode: spawn new processes on same nodes via /fork endpoint
+                    return self.fork_workers(role, colocate_role)
+
+                # Reuse existing workers - no new Slurm job submitted
+                worker_ids = [w.worker.id for w in target_workers]
+                self._colocated_roles[role] = colocate_role
+
+                logger.info(
+                    f"Role '{role}' colocated with '{colocate_role}': "
+                    f"reusing workers {worker_ids}"
                 )
+                return worker_ids
 
-            # Check if fork mode is enabled
-            if strategy.fork:
-                # Fork mode: spawn new processes on same nodes via /fork endpoint
-                return self.fork_workers(role, colocate_role)
-
-            # Reuse existing workers - no new Slurm job submitted
-            worker_ids = [w.worker.id for w in target_workers]
-            self._colocated_roles[role] = colocate_role
+            # Different worker counts: submit new job on the same nodes
+            # (e.g., AWEX colocation where rollout has TP-grouped instances)
+            target_job_id = self._jobs[colocate_role]
+            job_infos = query_jobs(slurm_ids=[target_job_id])
+            if not job_infos:
+                raise WorkerCreationError(
+                    role, f"Target job {target_job_id} not found in queue"
+                )
+            colocation_nodelist = job_infos[0].host
+            spec = schedulings[0]
+            total_gpus = spec.gpu * replicas
+            nodes = max(
+                1,
+                (total_gpus + self.n_gpus_per_node - 1) // self.n_gpus_per_node,
+            )
+            cpus_per_task = spec.cpu
+            mem_per_task = spec.mem * 1024
+            logger.info(
+                f"Creating {replicas} workers for role '{role}' colocated with "
+                f"'{colocate_role}' on nodes {colocation_nodelist}: "
+                f"nodes={nodes}, cpus={cpus_per_task}, mem={mem_per_task}MB"
+            )
+            nodelist = colocation_nodelist
+        elif strategy_type == SchedulingStrategyType.separation:
+            # Non-colocated: calculate nodes needed and submit new Slurm job
+            spec = schedulings[0]
+            total_gpus = spec.gpu * replicas
+            nodes = max(
+                1, (total_gpus + self.n_gpus_per_node - 1) // self.n_gpus_per_node
+            )
+            nodelist = spec.nodelist
+            cpus_per_task = spec.cpu
+            mem_per_task = spec.mem * 1024  # Convert GB to MB
 
             logger.info(
-                f"Role '{role}' colocated with '{colocate_role}': "
-                f"reusing workers {worker_ids}"
+                f"Creating {replicas} workers for role '{role}': "
+                f"nodes={nodes}, gpus_per_node={self.n_gpus_per_node}, "
+                f"cpus={cpus_per_task}, mem={mem_per_task}MB"
             )
-            return worker_ids
-
-        if strategy_type != SchedulingStrategyType.separation:
+        else:
             raise ValueError(f"Unknown scheduling strategy type: {strategy_type}")
-        # Non-colocated: calculate nodes needed and submit new Slurm job
-        spec = schedulings[0]
-        total_gpus = spec.gpu * replicas
-        nodes = max(1, (total_gpus + self.n_gpus_per_node - 1) // self.n_gpus_per_node)
-        nodelist = spec.nodelist
-
-        # Calculate resource requirements
-        n_gpus_per_node = min(
-            self.n_gpus_per_node, (spec.gpu * replicas + nodes - 1) // nodes
-        )
-        cpus_per_task = spec.cpu
-        mem_per_task = spec.mem * 1024  # Convert GB to MB
-
-        logger.info(
-            f"Creating {replicas} workers for role '{role}': "
-            f"nodes={nodes}, gpus_per_node={n_gpus_per_node}, "
-            f"cpus={cpus_per_task}, mem={mem_per_task}MB"
-        )
 
         # Generate sbatch script
+        # Colocated roles must not request GPU gres: the target role's job
+        # already holds the nodes' GPUs, so a second gres request would
+        # deadlock in the queue. Colocated workers address GPUs directly
+        # via base_gpu_id / CUDA_VISIBLE_DEVICES instead.
+        request_gpus = (
+            0
+            if strategy_type == SchedulingStrategyType.colocation
+            else spec.gpu * replicas
+        )
         sbatch_script = self._generate_sbatch_script(
             role=role,
             replicas=replicas,
             nodes=nodes,
-            total_gpus=spec.gpu * replicas,
+            total_gpus=request_gpus,
             cpus_per_task=cpus_per_task,
             mem_per_task=mem_per_task,
             schedulings=schedulings,

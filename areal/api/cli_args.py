@@ -1290,7 +1290,11 @@ class TrainEngineConfig:
 
     weight_update_mode: str = field(
         default="xccl",
-        metadata={"help": "Weight update backend type.", "choices": ["disk", "xccl"]},
+        metadata={
+            "help": "Weight update backend type. 'awex' requires a Megatron actor "
+            "and an SGLang rollout, and targets colocated actor-rollout setups.",
+            "choices": ["disk", "xccl", "awex"],
+        },
     )
     fsdp: FSDPEngineConfig = field(default_factory=FSDPEngineConfig)
     archon: ArchonEngineConfig = field(default_factory=ArchonEngineConfig)
@@ -2054,6 +2058,7 @@ class SGLangConfig:
     triton_attention_reduce_in_fp32: bool = False
     triton_attention_num_kv_splits: int = 8
     num_continuous_decode_steps: int = 1
+    load_format: str = "auto"
     enable_memory_saver: bool = False
     allow_auto_truncate: bool = False
     attention_backend: str | None = "fa3"
@@ -2155,7 +2160,6 @@ class SGLangConfig:
             # Model and tokenizer
             tokenizer_path=sglang_config.model_path,
             tokenizer_mode="auto",
-            load_format="auto",
             trust_remote_code=True,
             is_embedding=False,
             # Other runtime options
