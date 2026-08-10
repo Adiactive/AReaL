@@ -1136,10 +1136,21 @@ class RolloutController:
 
     def pause(self):
         self.dispatcher.pause()
+        # Proxy workers hold their own engines against the same inference
+        # servers. Without pausing them too they keep issuing generation
+        # requests during the weight-update window, while pause_generation is
+        # clearing those servers' caches — which corrupts version attribution
+        # and, for VLM rollouts, kills the engine on a stale multimodal hash.
+        # Pause them before the rollout workers so that the fewest requests are
+        # still in flight once pause_generation aborts and clears.
+        if self._proxy_started:
+            self._proxy_collective_rpc("pause", http_timeout=60.0)
         self._collective_rpc("pause", http_timeout=60.0)
 
     def resume(self):
         self._collective_rpc("resume", http_timeout=60.0)
+        if self._proxy_started:
+            self._proxy_collective_rpc("resume", http_timeout=60.0)
         self.dispatcher.resume()
 
     def export_stats(self) -> dict[str, float]:
