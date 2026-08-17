@@ -484,6 +484,10 @@ def make_mcore_model(
         # Aligning tf config settings with provider for consistency.
         tf_config.variable_seq_lengths = provider.variable_seq_lengths
         tf_config.moe_token_dispatcher_type = provider.moe_token_dispatcher_type
+
+        provider.moe_permute_fusion = mcore_config.moe_permute_fusion
+        tf_config.moe_permute_fusion = provider.moe_permute_fusion
+
         tf_config.batch_p2p_comm = provider.batch_p2p_comm
         tf_config.overlap_p2p_comm = provider.overlap_p2p_comm
 
