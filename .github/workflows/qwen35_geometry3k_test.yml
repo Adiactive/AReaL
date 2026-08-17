@@ -16,7 +16,7 @@ jobs:
   train:
     runs-on: linux-aarch64-a3-16
     container:
-      image: ghcr.io/hwvanici/areal_npu:v1.0.4-a3
+      image: ghcr.io/hwvanici/areal_npu:v1.0.5-a3
 
     env:
       # Required by the AReaL VLM NPU guide.
@@ -160,6 +160,7 @@ jobs:
           python examples/vlm/geometry3k_grpo.py \
             --config examples/vlm_npu/qwen3_5_2b_geometry3k_grpo.yaml \
             rollout.backend=vllm:d2p2t2 \
+            vllm.speculative_config=null \
             actor.backend=megatron:d2p2t2 \
             actor.path="${MODEL_DIR}" \
             train_dataset.path="${DATASET_DIR}" \

@@ -29,13 +29,13 @@ For multi-node training, create the container on every node.
 
 ## 1.2 Install AReaL
 
-Inside the container, clone the AReaL repository and check out the `ascend-v1.0.4`
+Inside the container, clone the AReaL repository and check out the `ascend-v1.0.5`
 branch:
 
 ```bash
 git clone https://github.com/inclusionAI/AReaL
 cd AReaL
-git checkout ascend-v1.0.4
+git checkout ascend-v1.0.5
 pip install -e . --no-deps
 ```
 

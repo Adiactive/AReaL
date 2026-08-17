@@ -32,12 +32,12 @@ ______________________________________________________________________
 
 # 3. Install AReaL
 
-Clone the **AReaL** repository and check out the `ascend-v1.0.4` branch:
+Clone the **AReaL** repository and check out the `ascend-v1.0.5` branch:
 
 ```bash
 git clone https://github.com/inclusionAI/AReaL
 cd AReal
-git checkout ascend-v1.0.4
+git checkout ascend-v1.0.5
 pip install -e . --no-deps
 ```
 

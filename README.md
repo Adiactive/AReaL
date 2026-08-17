@@ -89,7 +89,8 @@ and the [announcement on X](https://x.com/guohao_li/status/2009678513574408636).
 **\[2026/01/01\]** Happy New Year! Thanks to the outstanding contribution from
 @HwVanICI, we are excited to officially announce stable support for AReaL training on
 **Ascend NPU devices**! The code is actively maintained and continuously updated in the
-[`ascend` branch](https://github.com/areal-project/AReaL/tree/ascend). Check out
+[`ascend-v1.0.5` branch](https://github.com/areal-project/AReaL/tree/ascend-v1.0.5).
+Check out
 [our documentation](https://areal-project.github.io/AReaL/en/tutorial/installation_npu.html)
 to get started, and feel free to report any issues!
 
@@ -227,8 +228,9 @@ All RL algorithms support both asynchronous and synchronous versions by setting
 | -------------------------- | -------- | ------------ | -------------- | -------------------------------------------------------- |
 | **Qwen2/3**                | ✅       | ✅           | ✅             | -                                                        |
 | **Qwen3-MoE**              | ✅       | ✅           | ✅             | -                                                        |
-| **Qwen2.5-VL**             | ❌       | ✅           | ❌             | Vision-language model                                    |
-| **Qwen3-VL**               | ❌       | ✅           | ❌             | Vision-language model                                    |
+| **Qwen2.5-VL**             | ✅       | ✅           | ❌             | Vision-language model                                    |
+| **Qwen3-VL**               | ✅       | ✅           | ❌             | Vision-language model                                    |
+| **Qwen3.5/3.6/3.8**        | ✅       | ✅           | ✅             | Dense and MoE; Archon supports the text backbone only    |
 | **Gemma 3**                | ❌       | ✅           | ❌             | Vision-language model                                    |
 | **Other Hugging Face LLM** | ❌       | ✅           | ❌             | Compatibility depending on the version of `transformers` |
 
@@ -247,7 +249,7 @@ Check the [AI Coding Assistant Guide](docs/reference/ai_assisted_dev.md) and
 
 | Backend    | Tensor Parallel | Context Parallel | Pipeline Parallel | Data Parallel Attention | Expert Parallel |
 | ---------- | --------------- | ---------------- | ----------------- | ----------------------- | --------------- |
-| **vLLM**   | ✅              | ❓               | ✅                | ❓                      | ❓              |
+| **vLLM**   | ✅              | ✅               | ✅                | ✅                      | ✅              |
 | **SGLang** | ✅              | ❌               | ❌                | ✅                      | ✅              |
 
 ## 📖 Resources
