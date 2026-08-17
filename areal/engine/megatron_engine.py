@@ -436,8 +436,8 @@ class MegatronEngine(TrainEngine):
             mpu.get_data_parallel_group(),
         )
 
-    def _apply_megatron_bridge_lora(self) -> None:
-        assert self.model is not None, "Model must be initialized before applying LoRA."
+    def _create_megatron_bridge_lora_hook(self):
+        """Create a hook that injects LoRA before mixed precision and DDP wrapping."""
         assert self.bridge_cls == "megatron-bridge"
 
         target_modules = list(self.config.target_modules or [])
@@ -451,28 +451,47 @@ class MegatronEngine(TrainEngine):
             ]
         from megatron.bridge.peft.lora import LoRA as MegatronBridgeLoRA
 
+        from areal.engine.megatron_utils.megatron_bridge_patches import (
+            patch_mindspeed_row_parallel_lora,
+            patch_qwen35_hybrid_lora_specs,
+        )
+
+        patch_mindspeed_row_parallel_lora()
+        if is_qwen3_5_model(self.hf_config.model_type):
+            patch_qwen35_hybrid_lora_specs()
+
         self.bridge_lora = MegatronBridgeLoRA(
             target_modules=target_modules,
             dim=self.config.lora_rank,
             alpha=self.config.lora_alpha,
-            dropout=0.0,
+            dropout=self.config.lora_dropout,
         )
-        self.model = _MegatronModelList(self.bridge_lora(self.model, training=True))
-        self.bridge_lora.set_params_to_save(self.model)
 
-        total_params = sum(param.numel() for param in self.model.parameters())
-        trainable_params = sum(
-            param.numel() for param in self.model.parameters() if param.requires_grad
-        )
-        self.logger.info(
-            "Applied Megatron Bridge LoRA: target_modules=%s, rank=%s, alpha=%s, trainable=%s/%s (%.4f%%)",
-            target_modules,
-            self.config.lora_rank,
-            self.config.lora_alpha,
-            trainable_params,
-            total_params,
-            100.0 * trainable_params / max(total_params, 1),
-        )
+        def apply_lora(model):
+            model = self.bridge_lora(model, training=True)
+            self.bridge_lora.set_params_to_save(model)
+            total_params = sum(
+                param.numel() for chunk in model for param in chunk.parameters()
+            )
+            trainable_params = sum(
+                param.numel()
+                for chunk in model
+                for param in chunk.parameters()
+                if param.requires_grad
+            )
+            self.logger.info(
+                "Applied Megatron Bridge LoRA before DDP wrapping: "
+                "target_modules=%s, rank=%s, alpha=%s, trainable=%s/%s (%.4f%%)",
+                target_modules,
+                self.config.lora_rank,
+                self.config.lora_alpha,
+                trainable_params,
+                total_params,
+                100.0 * trainable_params / max(total_params, 1),
+            )
+            return model
+
+        return apply_lora
 
     def _apply_merged_lora(self) -> None:
         """Inject PEFT LoRA layers while retaining full-weight synchronization."""
@@ -577,9 +596,12 @@ class MegatronEngine(TrainEngine):
                 "MegatronEngine LoRA POC currently only supports bridge_type='megatron-bridge'. "
                 "mbridge does not support LoRA in this path."
             )
-        if self.config.use_merged_lora and self.bridge_cls != "mbridge":
+        if self.config.use_merged_lora and self.bridge_cls not in (
+            "mbridge",
+            "megatron-bridge",
+        ):
             raise NotImplementedError(
-                "Merged LoRA currently requires bridge_type='mbridge'."
+                "Merged LoRA requires bridge_type='mbridge' or 'megatron-bridge'."
             )
 
         self.tokenizer = load_hf_tokenizer(self.config.path)
@@ -589,7 +611,7 @@ class MegatronEngine(TrainEngine):
         ):
             self.bridge = self._build_hf_mcore_bridge()
 
-            if self.config.use_merged_lora:
+            if self.config.use_merged_lora and self.bridge_cls == "mbridge":
                 self.bridge = patch_mbridge_name_mapping(self.bridge)
 
             self.hf_config, self.tf_config = make_hf_and_mcore_config(
@@ -687,16 +709,17 @@ class MegatronEngine(TrainEngine):
             self._validate_fp8_consistency()
 
             # Warn once if bridge-delegated weight sync was requested but a
-            # fallback condition forces the registry conversion path (the
-            # dispatch in _update_weights_from_distributed silently falls back).
+            # fallback condition forces the registry conversion path. Merged
+            # LoRA intentionally stays on the bridge path: bridge export merges
+            # adapters into model-aware full HF weights.
             if self.mcore_config.use_bridge_for_update_weights:
                 fallback_reasons = []
                 if self.bridge_cls != "megatron-bridge":
                     fallback_reasons.append(f"bridge_type={self.bridge_cls!r}")
                 if self.quantization_config:
                     fallback_reasons.append("FP8/quantized training")
-                if self.config.use_lora:
-                    fallback_reasons.append("LoRA enabled")
+                if self.config.use_lora and not self.config.use_merged_lora:
+                    fallback_reasons.append("separate LoRA enabled")
                 if fallback_reasons:
                     self.logger.warning(
                         "use_bridge_for_update_weights=True, but live weight sync "
@@ -704,22 +727,29 @@ class MegatronEngine(TrainEngine):
                         f"{', '.join(fallback_reasons)}."
                     )
 
+            pre_wrap_hook = None
+            if self.lora_mode and self.bridge_cls == "megatron-bridge":
+                pre_wrap_hook = self._create_megatron_bridge_lora_hook()
+
             with self.device:
                 models = make_mcore_model(
                     hf_config=self.hf_config,
                     tf_config=self.tf_config,
                     mcore_config=self.mcore_config,
-                    bridge=None if self.config.use_merged_lora else self.bridge,
+                    bridge=(
+                        None
+                        if self.config.use_merged_lora and self.bridge_cls == "mbridge"
+                        else self.bridge
+                    ),
                     bridge_type=self.bridge_cls,
                     is_critic=self.config.is_critic,
                     use_lora=self.lora_mode,
+                    pre_wrap_hook=pre_wrap_hook,
                 )
 
         self.model = _MegatronModelList(models)
 
-        if self.config.use_lora:
-            self._apply_megatron_bridge_lora()
-        elif self.config.use_merged_lora:
+        if self.config.use_merged_lora and self.bridge_cls == "mbridge":
             self._apply_merged_lora()
 
         if self.config.init_from_scratch:
@@ -727,6 +757,23 @@ class MegatronEngine(TrainEngine):
         else:
             with self.device:
                 self._load_model_from_hf(self.config.path)
+
+        if (
+            self.lora_mode
+            and self.bridge_cls == "megatron-bridge"
+            and self.mcore_config.wrap_with_ddp
+        ):
+            missing_main_grad = [
+                name
+                for chunk in self.model
+                for name, param in chunk.named_parameters()
+                if param.requires_grad and not hasattr(param, "main_grad")
+            ]
+            if missing_main_grad:
+                raise RuntimeError(
+                    "LoRA parameters were not registered in Megatron DDP gradient "
+                    f"buffers: {missing_main_grad[:8]}"
+                )
 
         # NOTE: Clear high_precision_init_val for FP8 parameters.
         #
@@ -2508,17 +2555,15 @@ class MegatronEngine(TrainEngine):
 
         dist.barrier(group=self.cpu_group)
 
-        # Bridge delegation: when bridge_type=megatron-bridge and the user opts in,
-        # stream HF tensors directly from bridge.export_hf_weights. Falls back to
-        # the hand-rolled registry path for FP8 (quant_mapping in megatron-bridge
-        # is amax-style, not TE blockwise) and for LoRA (separate adapter export
-        # path not yet wired here).
+        # Bridge delegation streams model-aware HF tensors directly from
+        # bridge.export_hf_weights. It merges adapters by default, which is the
+        # required path for merged LoRA on hybrid models such as Qwen3.5. FP8 and
+        # separate-adapter LoRA retain their specialized registry paths.
         use_bridge = (
             self.bridge_cls == "megatron-bridge"
             and self.mcore_config.use_bridge_for_update_weights
             and not self.quantization_config
             and not self.config.use_lora
-            and not self.config.use_merged_lora
         )
         if use_bridge:
             self._update_weights_via_bridge(meta)

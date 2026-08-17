@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -309,6 +310,7 @@ def make_mcore_model(
     bridge_type: str = "mbridge",
     is_critic: bool = False,
     use_lora: bool = False,
+    pre_wrap_hook: Callable[[list[Any]], list[Any]] | None = None,
 ) -> list[GPTModel | DDP]:
     if bridge is not None and bridge_type == "mbridge":
         models = bridge.get_model(
@@ -334,6 +336,14 @@ def make_mcore_model(
 
     if bridge is not None and bridge_type == "megatron-bridge":
         provider = bridge.to_megatron_provider(load_weights=False)
+        if use_lora and hf_config.model_type == "qwen3_5":
+            from megatron.bridge.models.qwen_vl import qwen35_vl_provider
+
+            # The Qwen3.5 provider stores its spec callable on the dataclass as
+            # well as calling the module-level builder from the VLM path. The
+            # runtime patch updates the latter; keep the stored callable in sync
+            # for language-only and alternate provider construction paths.
+            provider.transformer_layer_spec = qwen35_vl_provider.get_transformer_block_with_experimental_attention_variant_spec
         vpp_size = mcore_config.virtual_pipeline_parallel_size or 0
 
         provider.tensor_model_parallel_size = mpu.get_tensor_model_parallel_world_size()
@@ -367,6 +377,17 @@ def make_mcore_model(
             local_layer_spec,
         )
 
+        uses_qwen3_moe_lora_spec = (
+            use_lora
+            and is_npu_available
+            and hf_config.model_type == "qwen3_moe"
+            and hf_config.architectures == ["Qwen3MoeForCausalLM"]
+            and bool(getattr(provider, "num_moe_experts", None))
+            and provider.transformer_layer_spec is default_layer_spec
+            and not getattr(provider, "fp8", None)
+            and not getattr(provider, "use_transformer_engine_full_layer_spec", False)
+            and not getattr(provider, "use_transformer_engine_op_fuser", False)
+        )
         uses_local_layer_spec = (
             use_lora
             and is_npu_available
@@ -376,7 +397,13 @@ def make_mcore_model(
             and not getattr(provider, "use_transformer_engine_full_layer_spec", False)
             and not is_valid_vision_model(hf_config.model_type)
         )
-        if uses_local_layer_spec:
+        if uses_qwen3_moe_lora_spec:
+            from areal.engine.megatron_utils.megatron_bridge_patches import (
+                patch_qwen3_moe_lora_spec,
+            )
+
+            patch_qwen3_moe_lora_spec(provider)
+        elif uses_local_layer_spec:
             # Megatron-Bridge applies LoRA to fused TE QKV/FC1 layers by asking
             # the base layer for its normalized input via `return_layernorm_output`.
             # MindSpeed's TELayerNormColumnParallelLinear does not implement that
@@ -435,7 +462,7 @@ def make_mcore_model(
         if use_lora or is_npu_available:
             provider.gradient_accumulation_fusion = False
 
-        # Keep these four flags aligned with mbridge base defaults.
+        # Keep runtime-sensitive provider flags aligned with AReaL's config.
         provider.variable_seq_lengths = True
         logger.warning(
             "Ignoring mcore_config.moe_token_dispatcher_type=%s for bridge_type='megatron-bridge'; "
@@ -476,6 +503,7 @@ def make_mcore_model(
             use_torch_fsdp2=mcore_config.use_torch_fsdp2,
             wrap_with_ddp=mcore_config.wrap_with_ddp,
             overlap_param_gather_with_optimizer_step=mcore_config.overlap_param_gather_with_optimizer_step,
+            pre_wrap_hook=pre_wrap_hook,
         )
         models = list(models)
 

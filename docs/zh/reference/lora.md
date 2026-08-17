@@ -36,6 +36,147 @@ AReaL 当前的 LoRA 支持矩阵如下：
 - 在 Qwen3 MoE 等 MoE 架构上进行 LoRA 微调，并通过 XCCL 更新 LoRA 权重。
 - 当 Megatron 与 rollout group 横跨多个节点时进行跨节点 LoRA 训练。
 
+### Megatron LoRA 模式
+
+Megatron engine 支持两种 LoRA 模式：
+
+1. **Megatron 和 vLLM 均使用 LoRA。** Megatron 训练 LoRA adapter，vLLM 在 rollout 期间应用这些
+   adapter。该模式目前仅支持 dense 模型。
+1. **Megatron 使用 LoRA，vLLM 使用合并后的权重。** Megatron 训练 LoRA adapter，
+   在每次权重更新前将其合并到基础权重中，然后将合并后的权重发送给 vLLM。因此， vLLM 在 rollout 期间不需要应用 LoRA adapter。该模式同时支持
+   dense 和 MoE 模型。
+
+第二种模式需设置 `actor.use_merged_lora=true`。以下命令使用
+`examples/math/gsm8k_grpo_megatron_merged.yaml` 作为共享基础配置。模型路径、
+数据集路径和并行布局等参数均通过命令行覆盖，从而保持基础配置的通用性。
+
+#### 合并 LoRA 示例
+
+**Qwen3-0.6B，单节点：**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_merged.yaml \
+  +actor.target_modules='[linear_qkv,linear_proj,linear_fc1,linear_fc2]' \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  scheduler.type=local \
+  cluster.n_gpus_per_node=16 \
+  rollout.backend=vllm:d8p1t1 \
+  actor.backend=megatron:d8p1t1 \
+  actor.path=/data/efs/models/Qwen3-0.6B \
+  actor.mb_spec.max_tokens_per_mb=5120 \
+  ref.mb_spec.max_tokens_per_mb=5120 \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
+
+**Qwen3-30B，单节点：**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_merged.yaml \
+  scheduler.type=local \
+  cluster.n_nodes=1 \
+  cluster.n_gpus_per_node=16 \
+  rollout.backend=vllm:d1p1t4 \
+  rollout.max_concurrent_rollouts=128 \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  "actor.backend='megatron:(attn:d1p12t1c1|ffn:d1p12t1e1)'" \
+  actor.path=/home/model/Qwen3-30B-A3B-Base \
+  actor.mb_spec.max_tokens_per_mb=5120 \
+  ref.mb_spec.max_tokens_per_mb=5120 \
+  +actor.target_modules='[linear_qkv,linear_proj]' \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  +vllm.enable_expert_parallel=true \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
+
+**Qwen3-30B，多节点：**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_merged.yaml \
+  scheduler.type=ray \
+  cluster.n_nodes=2 \
+  cluster.n_gpus_per_node=16 \
+  cluster.fileroot=/data/efs/areal_runtime/name_resolve \
+  cluster.name_resolve.nfs_record_root=/data/efs/areal_runtime/name_resolve \
+  rollout.backend=vllm:d4p1t4 \
+  rollout.max_concurrent_rollouts=128 \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  "actor.backend='megatron:(attn:d1p4t4c1|ffn:d1p4t1e4)'" \
+  actor.path=/home/model/Qwen3-30B-A3B-Base \
+  +actor.target_modules='[linear_qkv,linear_proj]' \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  +vllm.enable_expert_parallel=true \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
+
+**Qwen3.6-27B，单节点：**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_merged.yaml \
+  scheduler.type=local \
+  cluster.n_nodes=1 \
+  cluster.n_gpus_per_node=16 \
+  rollout.backend=vllm:d2p1t2 \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  actor.backend=megatron:d2p4t1 \
+  actor.path=/data/efs/models/Qwen3.6-27B \
+  actor.mb_spec.max_tokens_per_mb=5120 \
+  ref.mb_spec.max_tokens_per_mb=5120 \
+  "+actor.target_modules=['language_model.*.linear_qkv','language_model.*.linear_proj']" \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
+
+**Qwen3.6-27B，多节点：**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_merged.yaml \
+  scheduler.type=ray \
+  cluster.n_nodes=2 \
+  cluster.n_gpus_per_node=16 \
+  cluster.fileroot=/data/efs/areal_runtime/name_resolve \
+  cluster.name_resolve.nfs_record_root=/data/efs/areal_runtime/name_resolve \
+  rollout.backend=vllm:d8p1t2 \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  actor.backend=megatron:d4p4t1 \
+  actor.path=/data/efs/models/Qwen3.6-27B \
+  actor.mb_spec.max_tokens_per_mb=5120 \
+  ref.mb_spec.max_tokens_per_mb=5120 \
+  "+actor.target_modules=['language_model.*.linear_qkv','language_model.*.linear_proj']" \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
+
 ## 核心 LoRA 参数
 
 | 参数              | 作用                                                               | 常见取值              |
