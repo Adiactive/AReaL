@@ -354,10 +354,10 @@ rollout:
 
 ## Limitations
 
-- **Scheduler compatibility**: Online mode requires `local` or `slurm` schedulers. The
-  `ray` scheduler is not supported.
-- **Single-controller mode**: Online mode only works in single-controller mode
-  (`scheduler.type=local` or `scheduler.type=slurm`).
+- **Scheduler compatibility**: Online mode works with the `local`, `slurm`, and `ray`
+  schedulers. The proxy gateway has not yet been validated end-to-end under `ray`.
+- **Single-controller mode**: Online mode only works in single-controller mode (i.e.
+  when `AREAL_SPMD_MODE` is not set).
 
 ## See Also
 
