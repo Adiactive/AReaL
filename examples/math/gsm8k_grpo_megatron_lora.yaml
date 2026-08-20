@@ -87,6 +87,8 @@ actor:
   max_new_tokens: ${gconfig.max_new_tokens}
   megatron:
     bridge_type: megatron-bridge
+    use_bridge_for_update_weights: true
+    enable_mtp: false
   weight_update_mode: xccl
   use_lora: ${rollout.use_lora}
   peft_type: lora

@@ -120,6 +120,7 @@ from areal.engine.megatron_utils.megatron import (
 )
 from areal.engine.megatron_utils.megatron_lora import (
     get_vllm_lora_target_modules,
+    normalize_bridge_lora_name,
     patch_mbridge_name_mapping,
 )
 from areal.engine.megatron_utils.packed_context_parallel import (
@@ -709,17 +710,13 @@ class MegatronEngine(TrainEngine):
             self._validate_fp8_consistency()
 
             # Warn once if bridge-delegated weight sync was requested but a
-            # fallback condition forces the registry conversion path. Merged
-            # LoRA intentionally stays on the bridge path: bridge export merges
-            # adapters into model-aware full HF weights.
+            # fallback condition forces the registry conversion path.
             if self.mcore_config.use_bridge_for_update_weights:
                 fallback_reasons = []
                 if self.bridge_cls != "megatron-bridge":
                     fallback_reasons.append(f"bridge_type={self.bridge_cls!r}")
                 if self.quantization_config:
                     fallback_reasons.append("FP8/quantized training")
-                if self.config.use_lora and not self.config.use_merged_lora:
-                    fallback_reasons.append("separate LoRA enabled")
                 if fallback_reasons:
                     self.logger.warning(
                         "use_bridge_for_update_weights=True, but live weight sync "
@@ -2310,14 +2307,10 @@ class MegatronEngine(TrainEngine):
             self._update_bucket_weights_from_distributed(meta, converted_named_tensors)
             buffer_size = 0
 
-        model_name = self.hf_config.model_type
-        if self.config.use_lora:
-            model_name = f"{model_name}_lora"
-
         converted_named_tensors.extend(
             convert_to_hf(
                 self.tf_config,
-                model_name,
+                self.hf_config.model_type,
                 name,
                 param,
                 quantization_config=self.quantization_config,
@@ -2424,8 +2417,25 @@ class MegatronEngine(TrainEngine):
 
     def _init_weight_update_from_distributed(self, meta: WeightUpdateMeta) -> None:
         assert meta.type == "xccl"
+        if self.config.use_lora and (
+            self.bridge_cls != "megatron-bridge"
+            or not self.mcore_config.use_bridge_for_update_weights
+            or self.quantization_config
+        ):
+            raise RuntimeError(
+                "Separate Megatron LoRA XCCL synchronization requires "
+                "bridge_type='megatron-bridge', "
+                "use_bridge_for_update_weights=True, and unquantized training. "
+                "The registry-based LoRA conversion path is no longer supported."
+            )
+
         gen_pp_size = meta.gen_allocation.parallel.pp_size if meta.gen_allocation else 1
         gen_backend = meta.gen_allocation.backend if meta.gen_allocation else None
+        bridge_global_sync = (
+            self.bridge_cls == "megatron-bridge"
+            and self.mcore_config.use_bridge_for_update_weights
+            and not self.quantization_config
+        )
 
         # NOTE: Processes launched with torchrun will set the following env var to True,
         # which blocks creating another TCP store for weight update.
@@ -2513,13 +2523,13 @@ class MegatronEngine(TrainEngine):
             #   * gen_pp_size == 1 (any backend), and
             #   * vLLM with gen_pp_size > 1 (vLLM joins one flat group over all
             #     inference workers regardless of its internal PP).
-            # Each training PP-stage head (dp=tp=0, one per PP rank) creates its
-            # own group update_weight_group_{pp_rank} spanning all inference
-            # workers and later broadcasts the parameters owned by that stage.
-            # When train_pp_size == 1 only one PP head exists, so no port race
-            # is possible; with train_pp_size > 1 the per-head engine_lock and
-            # distinct group names keep the concurrent heads isolated.
-            if self.is_pipeline_parallel_head():
+            # Registry conversion sends stage-local tensors from every training
+            # PP head. Bridge export instead gathers a complete global stream,
+            # so only training PP0 owns the XCCL group and sends it.
+            is_global_update_head = self.is_pipeline_parallel_head() and (
+                not bridge_global_sync or self.pipeline_parallel_rank == 0
+            )
+            if is_global_update_head:
                 assert meta.gen_allocation is not None
 
                 meta.nccl_master_address = self.weight_update_master_addr = gethostip()
@@ -2570,17 +2580,17 @@ class MegatronEngine(TrainEngine):
 
         dist.barrier(group=self.cpu_group)
 
-        # Bridge delegation streams model-aware HF tensors directly from
-        # bridge.export_hf_weights. It merges adapters by default, which is the
-        # required path for merged LoRA on hybrid models such as Qwen3.5. FP8 and
-        # separate-adapter LoRA retain their specialized registry paths.
+        # Separate LoRA always uses Bridge's native adapter exporter. Full and
+        # merged weights may use either Bridge or the conversion registry.
         use_bridge = (
             self.bridge_cls == "megatron-bridge"
             and self.mcore_config.use_bridge_for_update_weights
             and not self.quantization_config
-            and not self.config.use_lora
         )
-        if use_bridge:
+        if self.config.use_lora:
+            assert use_bridge
+            self._update_lora_weights_via_bridge(meta)
+        elif use_bridge:
             self._update_weights_via_bridge(meta)
         else:
             self._update_weights_via_registry(meta)
@@ -2594,9 +2604,9 @@ class MegatronEngine(TrainEngine):
     def _update_weights_via_registry(self, meta: WeightUpdateMeta) -> None:
         """Hand-rolled conversion path via convert_to_hf registry.
 
-        Used for FP8, LoRA, and models with a converter entry. Iterates this PP
-        rank's local params, TP-gathers per param, converts to HF layout, and
-        bucket-broadcasts to the rollout engine.
+        Used for FP8, merged weights, and models with a converter entry. Iterates
+        this PP rank's local params, TP-gathers per param, converts to HF layout,
+        and bucket-broadcasts to the rollout engine.
         """
         num_moe_experts = self.tf_config.num_moe_experts
         weight_chunked_mem_size = meta.weight_chunked_mem_mb * 1024 * 1024
@@ -2610,11 +2620,7 @@ class MegatronEngine(TrainEngine):
             else get_named_parameters(self.model, num_moe_experts)
         )
         for name, param in named_parameters:
-            if ".experts." in name and not self.config.use_lora:
-                continue
-            if self.config.use_lora and (
-                ".adapter." not in name or not getattr(param, "requires_grad", False)
-            ):
+            if ".experts." in name:
                 continue
             buffer_size = self._impl_update_weight_from_distributed(
                 meta,
@@ -2628,12 +2634,6 @@ class MegatronEngine(TrainEngine):
         # Only pipeline parallel heads CAN contain named tensors here
         if converted_named_tensors:
             self._update_bucket_weights_from_distributed(meta, converted_named_tensors)
-        elif self.config.use_lora and self.is_pipeline_parallel_head():
-            self.logger.warning(
-                "No tensors were collected for distributed update at version %s.",
-                meta.version,
-            )
-
         dist.barrier(group=self.cpu_group)
 
         buffer_size = 0
@@ -2645,7 +2645,7 @@ class MegatronEngine(TrainEngine):
             else get_named_parameters(self.model, num_moe_experts)
         )
         for name, param in named_parameters:
-            if ".experts." not in name or self.config.use_lora:
+            if ".experts." not in name:
                 continue
             buffer_size = self._impl_update_expert_weight_from_distributed(
                 meta,
@@ -2687,14 +2687,60 @@ class MegatronEngine(TrainEngine):
             if not is_update_rank:
                 continue
             size = hf_tensor.numel() * hf_tensor.element_size()
-            if bucket_size + size > weight_chunked_mem_size:
+            if bucket and bucket_size + size > weight_chunked_mem_size:
                 self._update_bucket_weights_from_distributed(meta, bucket)
+                bucket = []
                 bucket_size = 0
             bucket.append((hf_name, hf_tensor.contiguous()))
             bucket_size += size
 
         if bucket:
             self._update_bucket_weights_from_distributed(meta, bucket)
+
+        dist.barrier(group=self.cpu_group)
+
+    def _update_lora_weights_via_bridge(self, meta: WeightUpdateMeta) -> None:
+        """Stream separate LoRA weights through Megatron-Bridge's PEFT exporter."""
+        export_adapter_weights = getattr(self.bridge, "export_adapter_weights", None)
+        if export_adapter_weights is None:
+            raise RuntimeError(
+                "The installed Megatron-Bridge does not provide "
+                "export_adapter_weights(); upgrade Megatron-Bridge to a version "
+                "that supports native adapter export."
+            )
+
+        weight_chunked_mem_size = meta.weight_chunked_mem_mb * 1024 * 1024
+        bucket: list[tuple[str, torch.Tensor]] = []
+        bucket_size = 0
+        is_update_rank = (
+            self.is_pipeline_parallel_head() and self.pipeline_parallel_rank == 0
+        )
+
+        # Every rank must exhaust this iterator because Bridge performs TP/PP
+        # collectives while gathering and converting adapter parameters.
+        for hf_name, hf_tensor in export_adapter_weights(
+            self.model,
+            cpu=False,
+            show_progress=False,
+        ):
+            if not is_update_rank:
+                continue
+            normalized_name = normalize_bridge_lora_name(hf_name)
+            size = hf_tensor.numel() * hf_tensor.element_size()
+            if bucket and bucket_size + size > weight_chunked_mem_size:
+                self._update_bucket_weights_from_distributed(meta, bucket)
+                bucket = []
+                bucket_size = 0
+            bucket.append((normalized_name, hf_tensor.contiguous()))
+            bucket_size += size
+
+        if bucket:
+            self._update_bucket_weights_from_distributed(meta, bucket)
+        elif is_update_rank:
+            self.logger.warning(
+                "Megatron-Bridge exported no LoRA tensors at version %s.",
+                meta.version,
+            )
 
         dist.barrier(group=self.cpu_group)
 

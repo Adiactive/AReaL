@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -25,7 +24,11 @@ def get_vllm_lora_target_modules(target_modules: list[str]) -> list[str]:
     }
     targets: list[str] = []
     for module_name in target_modules:
-        mapped = bridge_to_vllm_targets.get(module_name)
+        # Megatron-Bridge accepts qualified glob patterns such as
+        # ``language_model.*.linear_qkv``.  vLLM only needs the canonical
+        # module suffix when constructing the PEFT adapter configuration.
+        canonical_name = module_name.rsplit(".", 1)[-1]
+        mapped = bridge_to_vllm_targets.get(canonical_name)
         if mapped is None:
             raise NotImplementedError(
                 f"LoRA target module '{module_name}' is not supported in MegatronEngine yet."
@@ -34,188 +37,14 @@ def get_vllm_lora_target_modules(target_modules: list[str]) -> list[str]:
     return sorted(set(targets))
 
 
-def convert_qwen3_lora_to_hf(
-    tf_config,
-    name: str,
-    tensor: torch.Tensor,
-) -> list[tuple[str, torch.Tensor]]:
-    pattern = (
-        r"(?:^|.*\.)decoder\.layers\.(\d+)\."
-        r"(self_attention\.linear_qkv|self_attention\.linear_proj|mlp\.linear_fc1|mlp\.linear_fc2)\."
-        r"adapter\.(linear_in|linear_out)\.weight$"
-    )
-    match = re.match(pattern, name)
-    if match is None:
-        return []
-
-    layer_idx, module_name, adapter_part = match.groups()
-    base_prefix = f"base_model.model.model.layers.{layer_idx}"
-
-    if module_name == "self_attention.linear_proj":
-        hf_base = f"{base_prefix}.self_attn.o_proj"
-        suffix = (
-            "lora_A.default.weight"
-            if adapter_part == "linear_in"
-            else "lora_B.default.weight"
-        )
-        return [(f"{hf_base}.{suffix}", tensor)]
-
-    if module_name == "mlp.linear_fc2":
-        hf_base = f"{base_prefix}.mlp.down_proj"
-        suffix = (
-            "lora_A.default.weight"
-            if adapter_part == "linear_in"
-            else "lora_B.default.weight"
-        )
-        return [(f"{hf_base}.{suffix}", tensor)]
-
-    if module_name == "mlp.linear_fc1":
-        gate_base = f"{base_prefix}.mlp.gate_proj"
-        up_base = f"{base_prefix}.mlp.up_proj"
-        if adapter_part == "linear_in":
-            return [
-                (f"{gate_base}.lora_A.default.weight", tensor),
-                (f"{up_base}.lora_A.default.weight", tensor),
-            ]
-        gate_b, up_b = tensor.chunk(2, dim=0)
-        return [
-            (f"{gate_base}.lora_B.default.weight", gate_b.contiguous()),
-            (f"{up_base}.lora_B.default.weight", up_b.contiguous()),
-        ]
-
-    if module_name == "self_attention.linear_qkv":
-        q_base = f"{base_prefix}.self_attn.q_proj"
-        k_base = f"{base_prefix}.self_attn.k_proj"
-        v_base = f"{base_prefix}.self_attn.v_proj"
-        if adapter_part == "linear_in":
-            return [
-                (f"{q_base}.lora_A.default.weight", tensor),
-                (f"{k_base}.lora_A.default.weight", tensor),
-                (f"{v_base}.lora_A.default.weight", tensor),
-            ]
-
-        head_dim = (
-            tf_config.kv_channels
-            if getattr(tf_config, "kv_channels", None) is not None
-            else tf_config.hidden_size // tf_config.num_attention_heads
-        )
-        if getattr(tf_config, "num_query_groups", None) is None:
-            return []
-        value_num_per_group = (
-            tf_config.num_attention_heads // tf_config.num_query_groups
-        )
-
-        tensor = tensor.view(tf_config.num_query_groups, -1, head_dim, tensor.shape[1])
-        q_b, k_b, v_b = torch.split(tensor, [value_num_per_group, 1, 1], dim=1)
-
-        q_b = q_b.reshape(-1, q_b.shape[-1]).contiguous()
-        k_b = k_b.reshape(-1, k_b.shape[-1]).contiguous()
-        v_b = v_b.reshape(-1, v_b.shape[-1]).contiguous()
-
-        return [
-            (f"{q_base}.lora_B.default.weight", q_b),
-            (f"{k_base}.lora_B.default.weight", k_b),
-            (f"{v_base}.lora_B.default.weight", v_b),
-        ]
-
-    return []
-
-
-def convert_qwen3_moe_lora_to_hf(
-    tf_config,
-    name: str,
-    tensor: torch.Tensor,
-) -> list[tuple[str, torch.Tensor]]:
-    # Reuse non-MoE conversion for attention and dense MLP paths.
-    converted = convert_qwen3_lora_to_hf(tf_config, name, tensor)
-    if converted:
-        return converted
-
-    grouped_expert_pattern = (
-        r"(?:^|.*\.)decoder\.layers\.(\d+)\.mlp\.experts\."
-        r"(linear_fc1|linear_fc2)\.adapter\.(linear_in|linear_out)\.weight$"
-    )
-    match = re.match(grouped_expert_pattern, name)
-    if match is not None:
-        layer_idx, module_name, adapter_part = match.groups()
-        num_experts = getattr(tf_config, "num_moe_experts", None)
-        if num_experts is None:
-            num_experts = getattr(tf_config, "num_experts", None)
-        if num_experts is None:
-            return []
-
-        outputs: list[tuple[str, torch.Tensor]] = []
-        for expert_idx in range(num_experts):
-            base_prefix = (
-                f"base_model.model.model.layers.{layer_idx}.mlp.experts.{expert_idx}"
-            )
-
-            if module_name == "linear_fc2":
-                hf_base = f"{base_prefix}.down_proj"
-                suffix = (
-                    "lora_A.default.weight"
-                    if adapter_part == "linear_in"
-                    else "lora_B.default.weight"
-                )
-                outputs.append((f"{hf_base}.{suffix}", tensor))
-                continue
-
-            gate_base = f"{base_prefix}.gate_proj"
-            up_base = f"{base_prefix}.up_proj"
-            if adapter_part == "linear_in":
-                outputs.extend(
-                    [
-                        (f"{gate_base}.lora_A.default.weight", tensor),
-                        (f"{up_base}.lora_A.default.weight", tensor),
-                    ]
-                )
-                continue
-
-            gate_b, up_b = tensor.chunk(2, dim=0)
-            outputs.extend(
-                [
-                    (f"{gate_base}.lora_B.default.weight", gate_b.contiguous()),
-                    (f"{up_base}.lora_B.default.weight", up_b.contiguous()),
-                ]
-            )
-
-        return outputs
-
-    expert_pattern = (
-        r"(?:^|.*\.)decoder\.layers\.(\d+)\.mlp\.experts\."
-        r"(linear_fc1|linear_fc2)\.adapter\.(linear_in|linear_out)\.weight(\d+)$"
-    )
-    match = re.match(expert_pattern, name)
-    if match is None:
-        return []
-
-    layer_idx, module_name, adapter_part, expert_idx = match.groups()
-    base_prefix = f"base_model.model.model.layers.{layer_idx}.mlp.experts.{expert_idx}"
-
-    if module_name == "linear_fc2":
-        hf_base = f"{base_prefix}.down_proj"
-        suffix = (
-            "lora_A.default.weight"
-            if adapter_part == "linear_in"
-            else "lora_B.default.weight"
-        )
-        return [(f"{hf_base}.{suffix}", tensor)]
-
-    if module_name == "linear_fc1":
-        gate_base = f"{base_prefix}.gate_proj"
-        up_base = f"{base_prefix}.up_proj"
-        if adapter_part == "linear_in":
-            return [
-                (f"{gate_base}.lora_A.default.weight", tensor),
-                (f"{up_base}.lora_A.default.weight", tensor),
-            ]
-        gate_b, up_b = tensor.chunk(2, dim=0)
-        return [
-            (f"{gate_base}.lora_B.default.weight", gate_b.contiguous()),
-            (f"{up_base}.lora_B.default.weight", up_b.contiguous()),
-        ]
-
-    return []
+def normalize_bridge_lora_name(name: str) -> str:
+    """Normalize Megatron-Bridge adapter names to AReaL's PEFT convention."""
+    if not name.startswith("base_model.model."):
+        name = f"base_model.model.{name}"
+    for suffix in (".lora_A.weight", ".lora_B.weight"):
+        if name.endswith(suffix):
+            return f"{name[: -len(suffix)]}{suffix[: -len('.weight')]}.default.weight"
+    raise ValueError(f"Unsupported Megatron-Bridge LoRA parameter name: {name}")
 
 
 def _infer_target_modules_from_adapter_weights(weight_keys: Iterable[str]) -> list[str]:

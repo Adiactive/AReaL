@@ -31,11 +31,46 @@ The current LoRA support matrix in AReaL is:
 
 **Example scripts:**
 
-| Engine       | Example script                                    |
-| ------------ | ------------------------------------------------- |
-| FSDP2        | `examples/math/gsm8k_grpo_lora.yaml`              |
-| Megatron     | `examples/math/gsm8k_grpo_megatron_lora.yaml`     |
-| Megatron MoE | `examples/math/gsm8k_grpo_megatron_lora_moe.yaml` |
+| Engine   | Example script                                |
+| -------- | --------------------------------------------- |
+| FSDP2    | `examples/math/gsm8k_grpo_lora.yaml`          |
+| Megatron | `examples/math/gsm8k_grpo_megatron_lora.yaml` |
+
+### FSDP2 LoRA Example
+
+The following example uses `examples/math/gsm8k_grpo_lora.yaml` as the reusable base
+configuration. It trains Qwen3.6-27B with FSDP2 on eight NPUs and uses the other eight
+NPUs for four PP2 vLLM rollout replicas. FSDP2 LoRA uses disk-based adapter updates.
+
+**Qwen3.6-27B, single node:**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_lora.yaml \
+  scheduler.type=local \
+  cluster.n_nodes=1 \
+  cluster.n_gpus_per_node=16 \
+  cluster.fileroot=/data/efs/areal_runtime \
+  cluster.name_resolve.nfs_record_root=/data/efs/areal_runtime/name_resolve \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  rollout.backend=vllm:d4p2t1 \
+  rollout.max_concurrent_rollouts=10000 \
+  rollout.max_head_offpolicyness=0 \
+  actor.backend=fsdp:d8p1t1 \
+  actor.path=/data/efs/models/Qwen3.6-27B \
+  +actor.fsdp.memory_efficient_load=true \
+  actor.mb_spec.max_tokens_per_mb=3000 \
+  ref.mb_spec.max_tokens_per_mb=3000 \
+  actor.optimizer.lr=1.70e-5 \
+  vllm.max_model_len=4000 \
+  vllm.gpu_memory_utilization=0.97 \
+  +vllm.enforce_eager=true \
+  train_dataset.batch_size=256 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=256 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
 
 For Megatron + vLLM, AReaL now supports:
 
@@ -53,12 +88,109 @@ The Megatron engine supports LoRA in two modes:
    weights to vLLM. vLLM therefore does not need to apply LoRA adapters during rollout.
    This mode supports both dense and MoE models.
 
-Use `actor.use_merged_lora=true` for the second mode. The following commands use
+#### Separate LoRA Examples
+
+These examples train LoRA adapters in Megatron and apply the separate adapters in vLLM
+during rollout. They use Megatron-Bridge's native adapter export for live weight
+updates.
+
+**Qwen3-0.6B, single node:**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_lora.yaml \
+  scheduler.type=local \
+  cluster.n_nodes=1 \
+  cluster.n_gpus_per_node=16 \
+  cluster.fileroot=/data/efs/areal_runtime \
+  cluster.name_resolve.nfs_record_root=/data/efs/areal_runtime/name_resolve \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  rollout.backend=vllm:d8p1t1 \
+  actor.backend=megatron:d8p1t1 \
+  actor.path=/data/efs/models/Qwen3-0.6B \
+  actor.gradient_checkpointing=false \
+  actor.mb_spec.max_tokens_per_mb=5120 \
+  ref.mb_spec.max_tokens_per_mb=5120 \
+  '+actor.megatron={bridge_type: megatron-bridge, use_bridge_for_update_weights: true, enable_mtp: false}' \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
+
+**Qwen3.6-27B, single node:**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_lora.yaml \
+  scheduler.type=local \
+  cluster.n_nodes=1 \
+  cluster.n_gpus_per_node=16 \
+  cluster.fileroot=/data/efs/areal_runtime \
+  cluster.name_resolve.nfs_record_root=/data/efs/areal_runtime/name_resolve \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  rollout.backend=vllm:d2p4t1 \
+  actor.backend=megatron:d2p4t1 \
+  actor.path=/data/efs/models/Qwen3.6-27B \
+  actor.gradient_checkpointing=false \
+  actor.mb_spec.max_tokens_per_mb=5120 \
+  ref.mb_spec.max_tokens_per_mb=5120 \
+  '+actor.megatron={bridge_type: megatron-bridge, use_bridge_for_update_weights: true, enable_mtp: false}' \
+  actor.use_lora=true \
+  rollout.use_lora=true \
+  "+actor.target_modules=['language_model.*.linear_qkv','language_model.*.linear_proj']" \
+  vllm.enable_lora=true \
+  vllm.max_lora_rank=16 \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
+
+**Qwen3.6-27B, multiple nodes:**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_lora.yaml \
+  scheduler.type=ray \
+  cluster.n_nodes=2 \
+  cluster.n_gpus_per_node=16 \
+  cluster.fileroot=/data/efs/areal_runtime \
+  cluster.name_resolve.nfs_record_root=/data/efs/areal_runtime/name_resolve \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  rollout.backend=vllm:d4p4t1 \
+  actor.backend=megatron:d4p4t1 \
+  actor.path=/data/efs/models/Qwen3.6-27B \
+  actor.gradient_checkpointing=false \
+  actor.mb_spec.max_tokens_per_mb=5120 \
+  ref.mb_spec.max_tokens_per_mb=5120 \
+  '+actor.megatron={bridge_type: megatron-bridge, use_bridge_for_update_weights: true, enable_mtp: false}' \
+  actor.use_lora=true \
+  rollout.use_lora=true \
+  "+actor.target_modules=['language_model.*.linear_qkv','language_model.*.linear_proj']" \
+  vllm.enable_lora=true \
+  vllm.max_lora_rank=16 \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
+
+#### Merged LoRA Examples
+
+Use `actor.use_merged_lora=true` for this mode. The following commands use
 `examples/math/gsm8k_grpo_megatron_merged.yaml` as the shared base configuration. Values
 such as model paths, dataset paths, and parallelism layouts are supplied as command-line
 overrides so that the base configuration remains reusable.
-
-#### Merged LoRA Examples
 
 **Qwen3-0.6B, single node:**
 

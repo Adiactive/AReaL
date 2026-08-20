@@ -25,11 +25,45 @@ AReaL 当前的 LoRA 支持矩阵如下：
 
 **示例脚本：**
 
-| Engine       | Example script                                    |
-| ------------ | ------------------------------------------------- |
-| FSDP2        | `examples/math/gsm8k_grpo_lora.yaml`              |
-| Megatron     | `examples/math/gsm8k_grpo_megatron_lora.yaml`     |
-| Megatron MoE | `examples/math/gsm8k_grpo_megatron_lora_moe.yaml` |
+| Engine   | Example script                                |
+| -------- | --------------------------------------------- |
+| FSDP2    | `examples/math/gsm8k_grpo_lora.yaml`          |
+| Megatron | `examples/math/gsm8k_grpo_megatron_lora.yaml` |
+
+### FSDP2 LoRA 示例
+
+以下示例使用 `examples/math/gsm8k_grpo_lora.yaml` 作为可复用的基础配置。该配置使用 8 个 NPU 通过 FSDP2 训练
+Qwen3.6-27B，并使用另外 8 个 NPU 运行 4 个 PP2 vLLM rollout 副本。FSDP2 LoRA 通过磁盘更新 adapter。
+
+**Qwen3.6-27B，单节点：**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_lora.yaml \
+  scheduler.type=local \
+  cluster.n_nodes=1 \
+  cluster.n_gpus_per_node=16 \
+  cluster.fileroot=/data/efs/areal_runtime \
+  cluster.name_resolve.nfs_record_root=/data/efs/areal_runtime/name_resolve \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  rollout.backend=vllm:d4p2t1 \
+  rollout.max_concurrent_rollouts=10000 \
+  rollout.max_head_offpolicyness=0 \
+  actor.backend=fsdp:d8p1t1 \
+  actor.path=/data/efs/models/Qwen3.6-27B \
+  +actor.fsdp.memory_efficient_load=true \
+  actor.mb_spec.max_tokens_per_mb=3000 \
+  ref.mb_spec.max_tokens_per_mb=3000 \
+  actor.optimizer.lr=1.70e-5 \
+  vllm.max_model_len=4000 \
+  vllm.gpu_memory_utilization=0.97 \
+  +vllm.enforce_eager=true \
+  train_dataset.batch_size=256 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=256 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
 
 对于 Megatron + vLLM，AReaL 现在支持：
 
@@ -46,11 +80,107 @@ Megatron engine 支持两种 LoRA 模式：
    在每次权重更新前将其合并到基础权重中，然后将合并后的权重发送给 vLLM。因此， vLLM 在 rollout 期间不需要应用 LoRA adapter。该模式同时支持
    dense 和 MoE 模型。
 
-第二种模式需设置 `actor.use_merged_lora=true`。以下命令使用
-`examples/math/gsm8k_grpo_megatron_merged.yaml` 作为共享基础配置。模型路径、
-数据集路径和并行布局等参数均通过命令行覆盖，从而保持基础配置的通用性。
+#### 独立 LoRA 示例
+
+以下示例在 Megatron 中训练 LoRA adapter，并在 rollout 期间由 vLLM 应用独立 adapter。实时权重更新使用
+Megatron-Bridge 的原生 adapter 导出功能。
+
+**Qwen3-0.6B，单节点：**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_lora.yaml \
+  scheduler.type=local \
+  cluster.n_nodes=1 \
+  cluster.n_gpus_per_node=16 \
+  cluster.fileroot=/data/efs/areal_runtime \
+  cluster.name_resolve.nfs_record_root=/data/efs/areal_runtime/name_resolve \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  rollout.backend=vllm:d8p1t1 \
+  actor.backend=megatron:d8p1t1 \
+  actor.path=/data/efs/models/Qwen3-0.6B \
+  actor.gradient_checkpointing=false \
+  actor.mb_spec.max_tokens_per_mb=5120 \
+  ref.mb_spec.max_tokens_per_mb=5120 \
+  '+actor.megatron={bridge_type: megatron-bridge, use_bridge_for_update_weights: true, enable_mtp: false}' \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
+
+**Qwen3.6-27B，单节点：**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_lora.yaml \
+  scheduler.type=local \
+  cluster.n_nodes=1 \
+  cluster.n_gpus_per_node=16 \
+  cluster.fileroot=/data/efs/areal_runtime \
+  cluster.name_resolve.nfs_record_root=/data/efs/areal_runtime/name_resolve \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  rollout.backend=vllm:d2p4t1 \
+  actor.backend=megatron:d2p4t1 \
+  actor.path=/data/efs/models/Qwen3.6-27B \
+  actor.gradient_checkpointing=false \
+  actor.mb_spec.max_tokens_per_mb=5120 \
+  ref.mb_spec.max_tokens_per_mb=5120 \
+  '+actor.megatron={bridge_type: megatron-bridge, use_bridge_for_update_weights: true, enable_mtp: false}' \
+  actor.use_lora=true \
+  rollout.use_lora=true \
+  "+actor.target_modules=['language_model.*.linear_qkv','language_model.*.linear_proj']" \
+  vllm.enable_lora=true \
+  vllm.max_lora_rank=16 \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
+
+**Qwen3.6-27B，多节点：**
+
+```bash
+python examples/math/gsm8k_rl.py \
+  --config examples/math/gsm8k_grpo_megatron_lora.yaml \
+  scheduler.type=ray \
+  cluster.n_nodes=2 \
+  cluster.n_gpus_per_node=16 \
+  cluster.fileroot=/data/efs/areal_runtime \
+  cluster.name_resolve.nfs_record_root=/data/efs/areal_runtime/name_resolve \
+  +rollout.agent.admin_api_key=my-unique-admin-key-124 \
+  rollout.backend=vllm:d4p4t1 \
+  actor.backend=megatron:d4p4t1 \
+  actor.path=/data/efs/models/Qwen3.6-27B \
+  actor.gradient_checkpointing=false \
+  actor.mb_spec.max_tokens_per_mb=5120 \
+  ref.mb_spec.max_tokens_per_mb=5120 \
+  '+actor.megatron={bridge_type: megatron-bridge, use_bridge_for_update_weights: true, enable_mtp: false}' \
+  actor.use_lora=true \
+  rollout.use_lora=true \
+  "+actor.target_modules=['language_model.*.linear_qkv','language_model.*.linear_proj']" \
+  vllm.enable_lora=true \
+  vllm.max_lora_rank=16 \
+  vllm.max_model_len=8192 \
+  vllm.gpu_memory_utilization=0.8 \
+  train_dataset.batch_size=128 \
+  train_dataset.path=/data/efs/datasets/gsm8k \
+  valid_dataset.batch_size=128 \
+  valid_dataset.path=/data/efs/datasets/gsm8k \
+  2>&1 | tee out.log
+```
 
 #### 合并 LoRA 示例
+
+该模式需设置 `actor.use_merged_lora=true`。以下命令使用
+`examples/math/gsm8k_grpo_megatron_merged.yaml` 作为共享基础配置。模型路径、
+数据集路径和并行布局等参数均通过命令行覆盖，从而保持基础配置的通用性。
 
 **Qwen3-0.6B，单节点：**
 

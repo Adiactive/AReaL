@@ -22,10 +22,6 @@ from areal.engine.megatron_utils.fp8 import (
     get_block_size_from_config,
     quantize_params,
 )
-from areal.engine.megatron_utils.megatron_lora import (
-    convert_qwen3_lora_to_hf,
-    convert_qwen3_moe_lora_to_hf,
-)
 from areal.infra.platforms import current_platform
 
 
@@ -1270,9 +1266,6 @@ def convert_bailingmoe_to_hf(
 # them. In particular, ``qwen3_vl_moe`` must precede ``qwen3_vl``,
 # ``qwen3_moe``, and ``qwen3``.
 _CONVERSION_FN_REGISTRY = {
-    "qwen3_lora": convert_qwen3_lora_to_hf,
-    "qwen2_lora": convert_qwen3_lora_to_hf,
-    "qwen3_moe_lora": convert_qwen3_moe_lora_to_hf,
     "qwen2_5_vl": convert_qwen2_5_vl_to_hf,
     "qwen3_vl_moe": convert_qwen3_vl_moe_to_hf,
     "qwen3_vl": convert_qwen3_vl_to_hf,
