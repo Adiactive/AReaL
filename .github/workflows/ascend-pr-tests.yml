@@ -1,0 +1,688 @@
+name: Ascend PR Tests
+
+on:
+  pull_request:
+    branches:
+      - ascend
+  push:
+    branches:
+      - ascend
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ascend-pr-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.18"
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install development environment
+        run: uv sync --frozen --group dev
+
+      - name: Run pre-commit
+        run: uv run pre-commit run --all-files
+
+  cpu-unit-tests:
+    name: cpu-unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      AREAL_IS_IN_CI: "1"
+      HF_HOME: "${{ github.workspace }}/.cache/huggingface"
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+      NO_PROXY: "127.0.0.1,localhost"
+      UV_HTTP_RETRIES: "5"
+      UV_HTTP_TIMEOUT: "300"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.18"
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          save-cache: false
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install CPU test environment
+        run: uv sync --frozen --group dev
+
+      - name: Verify CPU-only environment
+        run: |
+          uv run python - <<'PY'
+          import torch
+
+          print("torch:", torch.__version__)
+          print("CUDA available:", torch.cuda.is_available())
+          assert not torch.cuda.is_available()
+          PY
+
+      - name: Pre-download slow-test artifacts
+        env:
+          HF_HUB_OFFLINE: "0"
+          TRANSFORMERS_OFFLINE: "0"
+          HF_DATASETS_OFFLINE: "0"
+        run: |
+          set -euo pipefail
+
+          uv run hf --version
+
+          download_with_retry() {
+            local attempt
+            local delay
+
+            for attempt in 1 2 3 4 5; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [[ "${attempt}" -lt 5 ]]; then
+                delay=$((attempt * 30))
+                echo "Download attempt ${attempt} failed; retrying in ${delay}s"
+                sleep "${delay}"
+              fi
+            done
+
+            echo "Download failed after 5 attempts"
+            return 1
+          }
+
+          download_with_retry \
+            uv run hf download \
+            openai/gsm8k \
+            --repo-type dataset \
+            --max-workers 4
+
+          download_with_retry \
+            uv run hf download \
+            hiyouga/geometry3k \
+            --repo-type dataset \
+            --max-workers 4
+
+          download_with_retry \
+            uv run hf download \
+            Qwen/Qwen3-0.6B \
+            --exclude "*.safetensors" \
+            --max-workers 4
+
+          download_with_retry \
+            uv run hf download \
+            Qwen/Qwen2.5-VL-3B-Instruct \
+            --exclude "*.safetensors" \
+            --max-workers 4
+
+      - name: Run CPU unit tests
+        run: |
+          uv run pytest -q \
+            tests/test_adv_norm_config.py \
+            tests/test_allocation_mode.py \
+            tests/test_async_reward_wrapper.py \
+            tests/test_async_task_runner.py \
+            tests/test_attn_impl_validation.py \
+            tests/test_awex_runtime.py \
+            tests/test_clevr_reward.py \
+            tests/test_code_agent.py \
+            tests/test_dataset_mixture.py \
+            tests/test_domain_router_workflow.py \
+            tests/test_dpo.py \
+            tests/test_dynamic_import.py \
+            tests/test_eval_dispatch.py \
+            tests/test_functional.py \
+            tests/test_geometry3k_sft_dataset.py \
+            tests/test_math_verify_reward.py \
+            tests/test_mopd_loss.py \
+            tests/test_perf_trace_converter.py \
+            tests/test_ppo_stats.py \
+            tests/test_prox_approx.py \
+            tests/test_ray_scheduler.py \
+            tests/test_rejection_sampling.py \
+            tests/test_requires_padded_seq.py \
+            tests/test_seqpack.py \
+            tests/test_split_trajectory_for_dump.py \
+            tests/test_staleness_manager.py \
+            tests/test_teacher_domain_routing.py \
+            tests/test_utils.py \
+            tests/test_vllm_generation_request.py \
+            tests/test_vllm_pp_mismatch.py \
+            tests/test_workflow_detection.py
+
+      - name: Run qualified slow CPU tests
+        run: |
+          uv run pytest -q -m slow \
+            tests/infra/data_service/test_epoch_crossing.py \
+            tests/infra/data_service/test_data_service_e2e.py
+
+      - name: Run additional CPU-compatible tests
+        run: |
+          uv run pytest -q \
+            -m "not skip and not skipif" \
+            -k "not torchrun_multi_rank" \
+            tests/test_perf_tracer.py \
+            tests/test_megatron_async_save.py \
+            tests/test_megatron_engine_vlm.py::TestVisionModelDetection \
+            tests/test_mindspeed_gdn_patch.py \
+            tests/test_reassemble_cp_logprobs.py \
+            tests/test_vision_sp_shard.py \
+            tests/test_warmup_process_groups.py
+
+  npu-pr-tests:
+    name: npu-pr-tests
+    runs-on: linux-aarch64-a3-4
+    timeout-minutes: 75
+    container:
+      image: ghcr.io/hwvanici/areal_npu:v1.0.5-a3
+
+    env:
+      AREAL_IS_IN_CI: "1"
+      AREAL_TEST_QWEN3_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B"
+      AREAL_TEST_QWEN35_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3.5-0.8B"
+      HF_ENDPOINT: "https://hf-mirror.com"
+      HF_HUB_DISABLE_XET: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          clean: true
+
+      - name: Install current AReaL repository
+        run: pip install -e . --no-deps
+
+      - name: Verify NPU runtime
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import torch
+          import torch_npu
+
+          print("torch:", torch.__version__)
+          print("torch_npu:", torch_npu.__version__)
+          print("NPU available:", torch.npu.is_available())
+          print("NPU count:", torch.npu.device_count())
+
+          assert torch.npu.is_available()
+          assert torch.npu.device_count() >= 4
+          PY
+
+          npu-smi info
+
+      - name: Inspect mounted model storage
+        run: |
+          set -uo pipefail
+
+          echo "Container-visible mounts:"
+          if command -v findmnt >/dev/null 2>&1; then
+            findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS | sort || true
+          else
+            mount || true
+          fi
+
+          echo "Filesystem capacity:"
+          df -hT || true
+
+          echo "Likely shared-storage roots:"
+          for path in /models /model /home/model /home/nfs /data/efs_rl /mnt /nfs /storage; do
+            if [[ -d "${path}" ]]; then
+              echo "--- ${path}"
+              ls -lah "${path}" 2>/dev/null | sed -n '1,120p' || true
+            fi
+          done
+
+          echo "Checkpoint configs under likely model roots:"
+          found_model_root=0
+          for path in \
+            /models \
+            /model \
+            /home/model \
+            /home/nfs/models \
+            /data/efs_rl/models \
+            /mnt/models \
+            /nfs/models \
+            /storage/models; do
+            if [[ -d "${path}" ]]; then
+              found_model_root=1
+              find "${path}" -mindepth 1 -maxdepth 3 -type f \
+                -name config.json -print 2>/dev/null | sort | sed -n '1,200p' || true
+            fi
+          done
+
+          if [[ "${found_model_root}" -eq 0 ]]; then
+            echo "No likely model root is visible inside the job container."
+          fi
+
+          echo "ModelScope Qwen cache entries:"
+          modelscope_qwen_root=/root/.cache/modelscope/hub/models/Qwen
+          if [[ -d "${modelscope_qwen_root}" ]]; then
+            find "${modelscope_qwen_root}" -mindepth 1 -maxdepth 1 -type d \
+              -printf '%f\n' 2>/dev/null | sort | sed -n '1,200p' || true
+          else
+            echo "MISSING: ${modelscope_qwen_root}"
+          fi
+
+          echo "Exact ModelScope checkpoint probe:"
+          for model_path in \
+            /root/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B \
+            /root/.cache/modelscope/hub/models/Qwen/Qwen3-30B-A3B \
+            /root/.cache/modelscope/hub/models/Qwen/Qwen3.5-0.8B \
+            /root/.cache/modelscope/hub/models/Qwen/Qwen3.5-35B-A3B; do
+            if [[ ! -f "${model_path}/config.json" ]]; then
+              echo "MISSING: ${model_path}"
+              continue
+            fi
+
+            weight_file_count=$(find -L "${model_path}" -maxdepth 1 -type f \
+              \( -name '*.safetensors' -o -name '*.bin' \) -print 2>/dev/null | wc -l)
+            weight_bytes=$(find -L "${model_path}" -maxdepth 1 -type f \
+              \( -name '*.safetensors' -o -name '*.bin' \) -printf '%s\n' \
+              2>/dev/null | awk '{ total += $1 } END { print total + 0 }')
+
+            if [[ "${weight_file_count}" -gt 0 ]]; then
+              echo "FOUND: ${model_path} weight_files=${weight_file_count} weight_bytes=${weight_bytes}"
+            else
+              echo "METADATA_ONLY: ${model_path}"
+            fi
+          done
+
+      - name: Run NPU-image dependency tests
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          pytest -q \
+            --deselect tests/test_megatron_engine_vlm.py::TestVisionModelDetection \
+            tests/test_megatron_engine_vlm.py
+          pytest -q \
+            tests/test_model_packed_seq_cp.py
+          pytest -q -m skipif tests/test_reassemble_cp_logprobs.py
+
+      - name: Verify cached NPU test models
+        run: |
+          set -euo pipefail
+
+          verify_model() {
+            local model_path="$1"
+            local weight_file
+
+            test -f "${model_path}/config.json"
+            weight_file=$(find -L "${model_path}" -maxdepth 1 -type f \
+              \( -name '*.safetensors' -o -name '*.bin' \) -print -quit)
+            test -n "${weight_file}"
+            echo "Using cached model: ${model_path}"
+          }
+
+          verify_model "${AREAL_TEST_QWEN3_PATH}"
+          verify_model "${AREAL_TEST_QWEN35_PATH}"
+
+      - name: Run qualified NPU tests
+        env:
+          HF_HUB_OFFLINE: "1"
+          PYTHONWARNINGS: "ignore"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+
+          mkdir -p npu-test-logs
+
+          pids=()
+          names=()
+
+          start_test() {
+            local name="$1"
+            local devices="$2"
+            local selector="$3"
+
+            (
+              export ASCEND_RT_VISIBLE_DEVICES="${devices}"
+              timeout 900 pytest -q "${selector}"
+            ) >"npu-test-logs/${name}.log" 2>&1 &
+
+            pids+=("$!")
+            names+=("${name}")
+          }
+
+          failed=0
+
+          wait_for_wave() {
+            local index
+            local log_path
+            local status
+
+            for index in "${!pids[@]}"; do
+              if wait "${pids[$index]}"; then
+                status=0
+                echo "PASS: ${names[$index]}"
+              else
+                status=$?
+                echo "FAIL: ${names[$index]}"
+                failed=1
+              fi
+
+              log_path="npu-test-logs/${names[$index]}.log"
+              if [[ "${status}" -eq 0 ]]; then
+                tail -n 40 "${log_path}" >"${log_path}.compact"
+                mv "${log_path}.compact" "${log_path}"
+                cat "${log_path}"
+              else
+                echo "Last 240 lines from ${log_path}:"
+                tail -n 240 "${log_path}"
+              fi
+            done
+
+            pids=()
+            names=()
+          }
+
+          start_test \
+            qwen35-hf-save-load \
+            0,1 \
+            tests/test_megatron_engine_distributed.py::test_qwen3_5_hf_save_load
+          start_test \
+            qwen35-tp2 \
+            2,3 \
+            tests/test_megatron_engine_distributed.py::test_qwen3_5_tensor_parallel
+          wait_for_wave
+
+          start_test \
+            qwen35-pp2 \
+            0,1 \
+            tests/test_megatron_engine_distributed.py::test_qwen3_5_pipeline_parallel
+          start_test \
+            qwen35-single-forward \
+            2 \
+            tests/test_megatron_engine_distributed.py::test_qwen3_5_single_gpu_forward
+          start_test \
+            distributed-lock \
+            3 \
+            'tests/test_lock.py::test_distributed_lock_single_rank[1]'
+          wait_for_wave
+
+          start_test \
+            qwen3-grad-norm \
+            0,1 \
+            tests/test_megatron_engine_distributed.py::test_qwen3_grad_norm_mb_invariance
+          start_test \
+            qwen3-tp2 \
+            2,3 \
+            tests/test_megatron_engine_distributed.py::test_qwen3_tensor_parallel
+          wait_for_wave
+
+          start_test \
+            qwen3-pp2 \
+            0,1 \
+            tests/test_megatron_engine_distributed.py::test_qwen3_pipeline_parallel
+          start_test \
+            qwen3-vpp2 \
+            2,3 \
+            tests/test_megatron_engine_distributed.py::test_qwen3_virtual_pipeline_parallel
+          wait_for_wave
+
+          start_test \
+            qwen3-cp2 \
+            0,1 \
+            tests/test_megatron_engine_distributed.py::test_qwen3_context_parallel
+          start_test \
+            ulysses \
+            2,3 \
+            'tests/test_ulysses.py::test_ulysses[2]'
+          wait_for_wave
+
+          start_test \
+            vocab-parallel \
+            0,1 \
+            'tests/test_vocab_parallel.py::test_vocab_parallel[2]'
+          start_test \
+            perf-tracer \
+            2,3 \
+            tests/test_perf_tracer.py::test_perf_tracer_torchrun_multi_rank
+          wait_for_wave
+
+          start_test \
+            distributed-lock2 \
+            0,1 \
+            'tests/test_lock.py::test_distributed_lock_multi_rank[2]'
+          wait_for_wave
+
+          start_test \
+            vocab-parallel4 \
+            0,1,2,3 \
+            'tests/test_vocab_parallel.py::test_vocab_parallel[4]'
+          wait_for_wave
+
+          exit "${failed}"
+
+      - name: Upload NPU test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: npu-pr-test-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: npu-test-logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Collect final NPU diagnostics
+        if: always()
+        run: npu-smi info || true
+
+  large-model-npu-tests:
+    name: large-model-npu-tests
+    runs-on: linux-aarch64-a3-8
+    timeout-minutes: 75
+    container:
+      image: ghcr.io/hwvanici/areal_npu:v1.0.5-a3
+
+    env:
+      AREAL_IS_IN_CI: "1"
+      AREAL_TEST_QWEN3_MOE_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3-30B-A3B"
+      AREAL_TEST_QWEN35_MOE_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3.5-35B-A3B"
+      HF_ENDPOINT: "https://hf-mirror.com"
+      HF_HUB_DISABLE_XET: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          clean: true
+
+      - name: Install current AReaL repository
+        run: pip install -e . --no-deps
+
+      - name: Verify NPU runtime
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import torch
+          import torch_npu
+
+          print("torch:", torch.__version__)
+          print("torch_npu:", torch_npu.__version__)
+          print("NPU available:", torch.npu.is_available())
+          print("NPU count:", torch.npu.device_count())
+
+          assert torch.npu.is_available()
+          assert torch.npu.device_count() >= 8
+          PY
+
+          npu-smi info
+
+      - name: Verify cached large NPU test models
+        run: |
+          set -euo pipefail
+
+          verify_model() {
+            local model_path="$1"
+            local weight_file
+
+            test -f "${model_path}/config.json"
+            weight_file=$(find -L "${model_path}" -maxdepth 1 -type f \
+              \( -name '*.safetensors' -o -name '*.bin' \) -print -quit)
+            test -n "${weight_file}"
+            echo "Using cached model: ${model_path}"
+          }
+
+          verify_model "${AREAL_TEST_QWEN3_MOE_PATH}"
+          verify_model "${AREAL_TEST_QWEN35_MOE_PATH}"
+
+      - name: Run large-model NPU tests
+        env:
+          HF_HUB_OFFLINE: "1"
+          PYTHONWARNINGS: "ignore"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+
+          mkdir -p large-npu-test-logs
+          mkdir -p /root/.cache/areal-ci-tmp
+
+          local_tmpdir=$(mktemp -d \
+            "/tmp/areal-ci-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
+          nfs_tmpdir=$(mktemp -d \
+            "/root/.cache/areal-ci-tmp/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
+          active_pid=""
+          timer_pid=""
+
+          cleanup() {
+            if [[ -n "${timer_pid}" ]]; then
+              kill "${timer_pid}" 2>/dev/null || true
+            fi
+            if [[ -n "${active_pid}" ]]; then
+              kill "${active_pid}" 2>/dev/null || true
+            fi
+            rm -rf -- "${local_tmpdir}" "${nfs_tmpdir}"
+          }
+          trap cleanup EXIT
+
+          echo "35B local compiler scratch: ${local_tmpdir}"
+          echo "30B NFS checkpoint scratch: ${nfs_tmpdir}"
+          df -hT / "${local_tmpdir}" "${nfs_tmpdir}"
+
+          run_test() {
+            local name="$1"
+            local selector="$2"
+            local test_tmpdir="$3"
+            local completed_pid
+            local completed_status
+            local started_at
+            local status
+
+            started_at=${SECONDS}
+            echo "START: ${name} TMPDIR=${test_tmpdir}"
+
+            (
+              export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+              export TMPDIR="${test_tmpdir}"
+              timeout --kill-after=60s 1200s pytest -q "${selector}"
+            ) >"large-npu-test-logs/${name}.log" 2>&1 &
+            active_pid=$!
+
+            while true; do
+              sleep 60 &
+              timer_pid=$!
+
+              set +e
+              wait -n -p completed_pid "${active_pid}" "${timer_pid}"
+              completed_status=$?
+              set -e
+
+              if [[ "${completed_pid}" == "${active_pid}" ]]; then
+                status=${completed_status}
+                kill "${timer_pid}" 2>/dev/null || true
+                wait "${timer_pid}" 2>/dev/null || true
+                timer_pid=""
+                break
+              fi
+
+              timer_pid=""
+              echo "PROGRESS: ${name} elapsed=$((SECONDS - started_at))s"
+              du -sh "${test_tmpdir}" 2>/dev/null || true
+              df -hP "${test_tmpdir}" | tail -n 1 || true
+            done
+
+            if [[ "${status}" -eq 0 ]]; then
+              echo "PASS: ${name} elapsed=$((SECONDS - started_at))s"
+            else
+              echo "FAIL: ${name} status=${status} elapsed=$((SECONDS - started_at))s"
+            fi
+
+            active_pid=""
+
+            if [[ "${status}" -eq 0 ]]; then
+              tail -n 40 "large-npu-test-logs/${name}.log" \
+                >"large-npu-test-logs/${name}.log.compact"
+              mv \
+                "large-npu-test-logs/${name}.log.compact" \
+                "large-npu-test-logs/${name}.log"
+              cat "large-npu-test-logs/${name}.log"
+            else
+              echo "Last 240 lines from large-npu-test-logs/${name}.log:"
+              tail -n 240 "large-npu-test-logs/${name}.log"
+            fi
+            return "${status}"
+          }
+
+          failed=0
+          run_test \
+            qwen35-35b-expert-parallel \
+            tests/test_megatron_engine_distributed.py::test_qwen3_5_moe_expert_parallel \
+            "${local_tmpdir}" \
+            || failed=1
+          run_test \
+            qwen3-30b-dcp-save-load \
+            tests/test_megatron_engine_distributed.py::test_qwen3moe_dcp_save_load \
+            "${nfs_tmpdir}" \
+            || failed=1
+
+          exit "${failed}"
+
+      - name: Upload large-model NPU test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: large-model-npu-test-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: large-npu-test-logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Collect final NPU diagnostics
+        if: always()
+        run: npu-smi info || true
