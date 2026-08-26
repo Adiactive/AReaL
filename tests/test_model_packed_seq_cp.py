@@ -1,10 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import torch
+
+try:
+    # Import the engine before raw megatron.core so NPU compatibility patches and
+    # the MindSpeed adaptor are installed in AReaL's supported order. MindSpeed
+    # also inspects argv while patching; pytest's CLI arguments are not Megatron
+    # arguments and can enable an invalid patch combination.
+    original_argv = sys.argv
+    sys.argv = [sys.argv[0]]
+    try:
+        from areal.engine import megatron_engine as megatron_engine_module
+    finally:
+        sys.argv = original_argv
+except ImportError:
+    megatron_engine_module = None
 
 pytest.importorskip("megatron.core")
 
@@ -157,10 +172,11 @@ def test_model_packed_forward_cp2_forwards_vision_inputs():
 
 def test_forward_result_reassembles_cp_local_logprobs():
     """Forward-only inference restores CP-local logprobs to global order."""
-    from areal.engine import megatron_engine as megatron_engine_module
+    if megatron_engine_module is None:
+        pytest.skip("MegatronEngine dependencies are unavailable")
 
     engine = object.__new__(megatron_engine_module.MegatronEngine)
-    engine.config = SimpleNamespace(is_critic=False)
+    engine.config = SimpleNamespace(is_critic=False, temperature=1.0)
     engine.enable_tree_training = False
 
     output = torch.randn(4, 8)

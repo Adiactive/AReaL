@@ -60,7 +60,7 @@ def distributed_lock_smoke_test(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", default="nccl")
+    parser.add_argument("--backend", default=current_platform.communication_backend)
     parser.add_argument("--iters", type=int, default=10)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--hold-time", type=float, default=0.01)

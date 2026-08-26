@@ -618,8 +618,8 @@ def test_create_workers_with_fork_colocation_delegates_to_fork_workers(
     ]
     called = []
 
-    def fake_fork_workers(role: str, target_role: str):
-        called.append((role, target_role))
+    def fake_fork_workers(job: Job):
+        called.append((job.role, job.scheduling_strategy.target))
         return ["ref/0", "ref/1"]
 
     monkeypatch.setattr(scheduler, "fork_workers", fake_fork_workers)
@@ -647,7 +647,7 @@ def test_colocation_replica_mismatch_raises_error(tmp_path):
         replicas=2,
         tasks=[SchedulingSpec(cpu=1, gpu=1, mem=1)],
         scheduling_strategy=SchedulingStrategy(
-            type=SchedulingStrategyType.colocation, target="actor"
+            type=SchedulingStrategyType.colocation, target="actor", fork=False
         ),
     )
 

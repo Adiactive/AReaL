@@ -2,6 +2,7 @@ import argparse
 import copy
 import os
 import tempfile
+from functools import cache
 from typing import Any
 
 try:
@@ -12,6 +13,7 @@ except ImportError:
 
 import torch  # noqa: I001
 import torch.distributed as dist
+from huggingface_hub import snapshot_download
 from megatron.core import parallel_state as mpu
 from transformers import AutoTokenizer
 
@@ -27,17 +29,46 @@ from areal.engine import FSDPEngine, MegatronEngine
 from areal.infra.platforms import current_platform
 from areal.utils import seeding
 from areal.utils.data import broadcast_tensor_container
-from areal.utils.testing_utils import DENSE_MODEL_PATHS, MOE_MODEL_PATHS
 
-# Re-key from testing_utils.py canonical paths so local-path overrides
-# (e.g. ``/home/nfs/models/Qwen3-0.6B``) propagate from a single source.
-# Keys here use the runner's existing convention (no underscore in ``qwen3moe``).
-MODEL_PATHS = {
-    "qwen3": DENSE_MODEL_PATHS["qwen3"],
-    "qwen3moe": MOE_MODEL_PATHS["qwen3_moe"],
-    "qwen3_5": DENSE_MODEL_PATHS["qwen3_5"],
-    "qwen3_5_moe": MOE_MODEL_PATHS["qwen3_5_moe"],
+_MODEL_PATH_SPECS = {
+    "qwen3": (
+        "AREAL_TEST_QWEN3_PATH",
+        "/storage/openpsi/models/Qwen__Qwen3-0.6B/",
+        "Qwen/Qwen3-0.6B",
+    ),
+    "qwen3moe": (
+        "AREAL_TEST_QWEN3_MOE_PATH",
+        "/storage/openpsi/models/Qwen__Qwen3-30B-A3B/",
+        "Qwen/Qwen3-30B-A3B",
+    ),
+    "qwen3_5": (
+        "AREAL_TEST_QWEN35_PATH",
+        "/storage/openpsi/models/Qwen__Qwen3.5-0.8B/",
+        "Qwen/Qwen3.5-0.8B",
+    ),
+    "qwen3_5_moe": (
+        "AREAL_TEST_QWEN35_MOE_PATH",
+        "/storage/openpsi/models/Qwen__Qwen3.5-35B-A3B/",
+        "Qwen/Qwen3.5-35B-A3B",
+    ),
 }
+
+
+@cache
+def _get_model_path(model_type: str) -> str:
+    env_name, local_path, hf_id = _MODEL_PATH_SPECS[model_type]
+    configured_path = os.environ.get(env_name)
+    if configured_path:
+        if not os.path.exists(configured_path):
+            raise FileNotFoundError(f"{env_name} does not exist: {configured_path}")
+        return configured_path
+    if os.path.exists(local_path):
+        return local_path
+    return snapshot_download(
+        repo_id=hf_id,
+        ignore_patterns=["*.gguf", "*.ggml", "consolidated*"],
+    )
+
 
 # bridge_type must default to mbridge for backwards compat with existing
 # qwen3/qwen3moe tests; the qwen3_5 family (dense + MoE) is forced to
@@ -114,7 +145,7 @@ def make_engine(model_type, backend, mb_spec, vpp_size=1, init_optimizer=False):
         backend=backend,
         experiment_name="test",
         trial_name="test",
-        path=MODEL_PATHS[model_type],
+        path=_get_model_path(model_type),
         mb_spec=mb_spec,
         optimizer=OptimizerConfig() if init_optimizer else None,
         megatron=MegatronEngineConfig(
@@ -136,7 +167,7 @@ def make_fsdp_engine(model_type, backend, mb_spec, init_optimizer=False):
         experiment_name="test",
         trial_name="test",
         mb_spec=mb_spec,
-        path=MODEL_PATHS[model_type],
+        path=_get_model_path(model_type),
         optimizer=OptimizerConfig() if init_optimizer else None,
     )
     alloc_mode = ModelAllocation.from_str(backend)
@@ -382,7 +413,7 @@ def test_train_dcp_save_load(
     if rank == 0:
         os.makedirs(path, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS[model_type])
+    tokenizer = AutoTokenizer.from_pretrained(_get_model_path(model_type))
 
     mb_spec = MicroBatchSpec(max_tokens_per_mb=256)
     engine = make_engine(
@@ -488,7 +519,7 @@ def test_simple_dcp_save_load(
     if rank == 0:
         os.makedirs(path, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS[model_type])
+    tokenizer = AutoTokenizer.from_pretrained(_get_model_path(model_type))
 
     mb_spec = MicroBatchSpec(max_tokens_per_mb=256)
     engine = make_engine(
@@ -559,7 +590,7 @@ def test_train_hf_save_load(
     if rank == 0:
         os.makedirs(save_dir, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS[model_type])
+    tokenizer = AutoTokenizer.from_pretrained(_get_model_path(model_type))
 
     skip_train = _MODEL_SAVELOAD_SKIP_TRAIN.get(model_type, False)
     mb_spec = MicroBatchSpec(max_tokens_per_mb=256)

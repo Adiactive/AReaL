@@ -288,22 +288,27 @@ def test_qwen3_5_hf_save_load(tmp_path_factory):
 @pytest.mark.multi_gpu
 @pytest.mark.slow
 def test_qwen3_5_moe_expert_parallel(tmp_path_factory):
-    """Qwen3.5-MoE megatron forward under PP=2 / TP=2 / EP=2.
+    """Qwen3.5-MoE megatron forward with expert parallelism.
 
     The MoE analog of ``test_qwen3moe_expert_parallel``. CP is unavailable for
-    the GDN layers and the full-attention layers cap TP at 2, so the 4 ranks are
-    filled with PP=2 and experts run at EP=2. The megatron-vs-FSDP cross-check is
-    skipped for this model (see ``_MODEL_SKIP_FSDP_COMPARE``) because a 35B-A3B
-    FSDP replica cannot co-reside with the megatron model. This validates engine
-    init + GDN BSHD forward + cross-rank logprob consistency; weight-conversion
-    correctness is covered by ``test_qwen3_5_moe_hf_save_load``.
+    the GDN layers and the full-attention layers cap TP at 2. NPU uses PP=4 to
+    fit the model across 8 ranks; other platforms retain the 4-rank PP=2 layout.
+    Experts run at EP=2. The megatron-vs-FSDP cross-check is skipped for this
+    model (see ``_MODEL_SKIP_FSDP_COMPARE``) because a 35B-A3B FSDP replica
+    cannot co-reside with the megatron model. This validates engine init + GDN
+    BSHD forward + cross-rank logprob consistency; weight-conversion correctness
+    is covered by ``test_qwen3_5_moe_hf_save_load``.
     """
-    if current_platform.device_count() < 4:
-        pytest.skip("Qwen3.5 MoE expert parallel requires 4 GPUs to run")
+    pipeline_parallel_size = 4 if current_platform.device_type == "npu" else 2
+    world_size = pipeline_parallel_size * 2
+    if current_platform.device_count() < world_size:
+        pytest.skip(f"Qwen3.5 MoE expert parallel requires {world_size} accelerators")
     output = tmp_path_factory.mktemp("test_output") / "qwen3_5_moe_expert_parallel.out"
     _run_test_with_torchrun(
         "qwen3_5_moe",
-        "megatron:(attn:d1p2t2|ffn:d1p2t1e2)",
+        "megatron:"
+        f"(attn:d1p{pipeline_parallel_size}t2|"
+        f"ffn:d1p{pipeline_parallel_size}t1e2)",
         test_type="forward",
         output=str(output),
     )
@@ -312,7 +317,7 @@ def test_qwen3_5_moe_expert_parallel(tmp_path_factory):
 @pytest.mark.multi_gpu
 @pytest.mark.slow
 def test_qwen3_5_moe_hf_save_load(tmp_path_factory):
-    """HF save/load round-trip for Qwen3.5-MoE under PP=2 / TP=2 / EP=2.
+    """HF save/load round-trip for Qwen3.5-MoE under TP=2 / EP=2.
 
     Validates the megatron-bridge conversion of MoE expert weights
     (TEGroupedLinear ``weight0..N`` + GLU ``linear_fc1`` stride-2 de-interleave)
@@ -321,15 +326,19 @@ def test_qwen3_5_moe_hf_save_load(tmp_path_factory):
     ``flattened_range`` tensors yet. The train step is skipped for this model
     (see ``_MODEL_SAVELOAD_SKIP_TRAIN`` in the runner) because a 35B-A3B
     optimizer state does not fit; the loaded HF weights are already non-trivial,
-    so the round-trip still exercises expert-weight conversion. No optimizer
-    means it fits on 4 GPUs.
+    so the round-trip still exercises expert-weight conversion. NPU uses PP=4
+    across 8 ranks to reduce per-rank memory; other platforms retain PP=2.
     """
-    if current_platform.device_count() < 4:
-        pytest.skip("Qwen3.5 MoE HF save load requires 4 GPUs to run")
+    pipeline_parallel_size = 4 if current_platform.device_type == "npu" else 2
+    world_size = pipeline_parallel_size * 2
+    if current_platform.device_count() < world_size:
+        pytest.skip(f"Qwen3.5 MoE HF save load requires {world_size} accelerators")
     output = tmp_path_factory.mktemp("test_output") / "qwen3_5_moe_hf_save_load.out"
     _run_test_with_torchrun(
         "qwen3_5_moe",
-        "megatron:(attn:d1p2t2|ffn:d1p2t1e2)",
+        "megatron:"
+        f"(attn:d1p{pipeline_parallel_size}t2|"
+        f"ffn:d1p{pipeline_parallel_size}t1e2)",
         test_type="train_hf_save_load",
         output=str(output),
     )

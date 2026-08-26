@@ -23,7 +23,7 @@ def setup_distributed_environment():
     master_port = os.environ.get("MASTER_PORT", "29500")
 
     dist.init_process_group(
-        backend="nccl",
+        backend=current_platform.communication_backend,
         init_method=f"tcp://{master_addr}:{master_port}",
         world_size=world_size,
         rank=rank,
@@ -93,7 +93,7 @@ def run_ulysses_correctness_test():
     sp_group = dist.new_group(
         ranks=list(range(world_size)),
         timeout=DIST_GROUP_DEFAULT_TIMEOUT,
-        backend="nccl",
+        backend=current_platform.communication_backend,
     )
     set_ulysses_sequence_parallel_group(sp_group)
     apply_monkey_patch(attention, ulysses_sp_size=world_size)

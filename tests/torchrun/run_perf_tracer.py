@@ -5,6 +5,7 @@ import torch
 import torch.distributed as dist
 
 from areal.api.cli_args import PerfTracerConfig
+from areal.infra.platforms import current_platform
 from areal.utils import perf_tracer
 from areal.utils.perf_tracer import Category
 
@@ -38,8 +39,11 @@ def main() -> None:
             args={"rank": rank},
         ):
             device = (
-                torch.device("cuda", rank % torch.cuda.device_count())
-                if torch.cuda.is_available()
+                torch.device(
+                    current_platform.device_type,
+                    rank % current_platform.device_count(),
+                )
+                if current_platform.device_type != "cpu"
                 else torch.device("cpu")
             )
             size = 512 if rank % 2 == 0 else 4096
@@ -52,8 +56,8 @@ def main() -> None:
                 args={"rank": rank, "size": size},
             ):
                 _c = torch.matmul(a, b)
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize(device)
+                if current_platform.device_type != "cpu":
+                    current_platform.synchronize()
 
             with perf_tracer.trace_scope(
                 "matmul",
@@ -63,8 +67,8 @@ def main() -> None:
                 c = None
                 for _ in range(1000):
                     c = torch.matmul(a, b)
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize(device)
+                if current_platform.device_type != "cpu":
+                    current_platform.synchronize()
 
             perf_tracer.instant(
                 "torchrun-mark",

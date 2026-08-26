@@ -2,10 +2,12 @@ import subprocess
 
 import pytest
 
+from areal.infra.platforms import current_platform
 from areal.utils.network import find_free_ports
 
 
-def _run_lock_test(world_size: int, backend: str = "nccl", iters: int = 10):
+def _run_lock_test(world_size: int, backend: str | None = None, iters: int = 10):
+    backend = backend or current_platform.communication_backend
     port = find_free_ports(1)[0]
     cmd = [
         "torchrun",
