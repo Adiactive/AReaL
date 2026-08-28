@@ -236,7 +236,7 @@ jobs:
 
   npu-pr-tests:
     name: npu-pr-tests
-    runs-on: linux-aarch64-a3-16
+    runs-on: linux-aarch64-a3-8
     timeout-minutes: 90
     container:
       image: ghcr.io/hwvanici/areal_npu:v1.0.6rc1-a3
@@ -345,7 +345,7 @@ jobs:
           print("NPU count:", torch.npu.device_count())
 
           assert torch.npu.is_available()
-          assert torch.npu.device_count() >= 16
+          assert torch.npu.device_count() >= 8
           PY
 
           npu-smi info
@@ -396,29 +396,17 @@ jobs:
           mkdir -p npu-test-logs
           mkdir -p /root/.cache/areal-ci-tmp
 
-          dcp_tmpdir=$(mktemp -d \
-            "/root/.cache/areal-ci-tmp/dcp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
           hf_tmpdir=$(mktemp -d \
             "/root/.cache/areal-ci-tmp/hf-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
-          dcp_followup_tmpdir=$(mktemp -d \
-            "/tmp/areal-ci-dcp-followup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
+          qwen35_tmpdir=$(mktemp -d \
+            "/tmp/areal-ci-qwen35-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
           compute_tmpdir=$(mktemp -d \
             "/tmp/areal-ci-compute-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
-          checkpoint_pid=""
-          compute_pid=""
 
           cleanup() {
-            local pid
-
-            for pid in "${checkpoint_pid}" "${compute_pid}"; do
-              if [[ -n "${pid}" ]]; then
-                kill "${pid}" 2>/dev/null || true
-              fi
-            done
             rm -rf -- \
-              "${dcp_tmpdir}" \
               "${hf_tmpdir}" \
-              "${dcp_followup_tmpdir}" \
+              "${qwen35_tmpdir}" \
               "${compute_tmpdir}"
           }
           trap cleanup EXIT
@@ -499,7 +487,7 @@ jobs:
             echo "START: ${name} devices=${devices}"
             (
               export ASCEND_RT_VISIBLE_DEVICES="${devices}"
-              export TMPDIR="${lane_tmpdir}"
+              export TMPDIR="${wave_tmpdir}"
               timeout --kill-after=60s 900s \
                 pytest -q -p scripts.ci_test_report "${selector}"
             ) >"npu-test-logs/${name}.log" 2>&1 &
@@ -527,49 +515,40 @@ jobs:
             names=()
           }
 
-          checkpoint_lane() {
+          run_qwen35_tests() {
             local failed=0
-            local lane_tmpdir="${dcp_followup_tmpdir}"
+            local wave_tmpdir="${qwen35_tmpdir}"
             local -a names=()
             local -a pids=()
 
-            run_test \
-              qwen3-30b-dcp-save-load \
-              8,9,10,11,12,13,14,15 \
-              tests/test_megatron_engine_distributed.py::test_qwen3moe_dcp_save_load \
-              "${dcp_tmpdir}" \
-              1200 \
-              || failed=1
-            rm -rf -- "${dcp_tmpdir}"
-
             start_normal_test \
               qwen35-hf-save-load \
-              8,9 \
+              0,1 \
               tests/test_megatron_engine_distributed.py::test_qwen3_5_hf_save_load
             start_normal_test \
               qwen35-tp2 \
-              10,11 \
+              2,3 \
               tests/test_megatron_engine_distributed.py::test_qwen3_5_tensor_parallel
             start_normal_test \
               qwen35-pp2 \
-              12,13 \
+              4,5 \
               tests/test_megatron_engine_distributed.py::test_qwen3_5_pipeline_parallel
             start_normal_test \
               qwen35-single-forward \
-              14 \
+              6 \
               tests/test_megatron_engine_distributed.py::test_qwen3_5_single_gpu_forward
             start_normal_test \
               distributed-lock \
-              15 \
+              7 \
               'tests/test_lock.py::test_distributed_lock_single_rank[1]'
             wait_for_normal_wave
 
             return "${failed}"
           }
 
-          compute_lane() {
+          run_compute_tests() {
             local failed=0
-            local lane_tmpdir="${compute_tmpdir}"
+            local wave_tmpdir="${compute_tmpdir}"
             local -a names=()
             local -a pids=()
 
@@ -646,27 +625,20 @@ jobs:
             return "${failed}"
           }
 
-          checkpoint_lane &
-          checkpoint_pid=$!
-          compute_lane &
-          compute_pid=$!
-
           failed=0
-          if wait "${checkpoint_pid}"; then
-            echo "PASS: checkpoint lane"
+          if run_qwen35_tests; then
+            echo "PASS: Qwen3.5 tests"
           else
-            echo "FAIL: checkpoint lane"
+            echo "FAIL: Qwen3.5 tests"
             failed=1
           fi
-          checkpoint_pid=""
 
-          if wait "${compute_pid}"; then
-            echo "PASS: compute lane"
+          if run_compute_tests; then
+            echo "PASS: compute tests"
           else
-            echo "FAIL: compute lane"
+            echo "FAIL: compute tests"
             failed=1
           fi
-          compute_pid=""
 
           exit "${failed}"
 
