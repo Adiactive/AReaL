@@ -16,6 +16,8 @@ from areal.engine.fsdp_utils import PerLayerOptimWrapper, apply_fsdp2
 from areal.engine.fsdp_utils.grad import fsdp2_clip_grad_norm
 from areal.engine.fsdp_utils.optimizer import _get_local_tensor
 
+pytestmark = [pytest.mark.cuda, pytest.mark.nccl]
+
 CUDA_AVAILABLE = torch.cuda.is_available()
 
 

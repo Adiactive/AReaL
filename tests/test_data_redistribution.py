@@ -10,6 +10,8 @@ from areal.infra.platforms import current_platform
 from areal.utils.environ import is_in_ci
 from areal.utils.network import find_free_ports
 
+pytestmark = pytest.mark.nccl
+
 
 def assert_tensor_container_close(x1, x2):
     assert type(x1) is type(x2), (type(x1), type(x2))

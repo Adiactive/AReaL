@@ -24,6 +24,8 @@ from tests.utils import get_model_path
 from areal.api.cli_args import SGLangConfig
 from areal.utils import network
 
+pytestmark = pytest.mark.npu
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------

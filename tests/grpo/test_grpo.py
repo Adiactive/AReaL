@@ -12,6 +12,8 @@ from tests.utils import get_dataset_path, get_model_path
 
 from areal.api.cli_args import GRPOConfig, load_expr_config
 
+pytestmark = pytest.mark.npu
+
 # Each (training_backend, inference_backend) pair and its pytest mark.
 _SGLANG_CASES = [
     pytest.param("fsdp", "sglang", id="fsdp-sglang", marks=pytest.mark.sglang),

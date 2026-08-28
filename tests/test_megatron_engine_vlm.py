@@ -15,6 +15,8 @@ import torch
 class TestUnwrapToGptModel:
     """Test unwrap_to_gpt_model with VLM model structures."""
 
+    pytestmark = pytest.mark.npu
+
     def test_plain_gpt_model_unwraps(self):
         """Plain GPTModel (no wrapping) should return itself."""
         from megatron.core.models.gpt.gpt_model import GPTModel
@@ -94,6 +96,8 @@ class TestUnwrapToGptModel:
 
 class TestExtractVisionFromMultiModal:
     """Test _extract_vision_from_multi_modal helper."""
+
+    pytestmark = pytest.mark.npu
 
     def test_extracts_pixel_values_and_grid(self):
         """Vision tensors should land on padded_mb only, not duplicated on mb."""
@@ -215,6 +219,8 @@ class TestPrepareMbListRebindCallerSafety:
     instead — this test pins that contract.
     """
 
+    pytestmark = pytest.mark.npu
+
     def test_rebind_does_not_mutate_caller_input(self):
         from areal.engine.megatron_utils.packed_context_parallel import (
             _is_multi_modal_payload_key,
@@ -300,6 +306,8 @@ class TestVisionModelDetection:
 
 class TestConvertQwen25VLToHF:
     """Test mcore→HF weight name conversion for Qwen2.5-VL."""
+
+    pytestmark = pytest.mark.npu
 
     @pytest.fixture()
     def tf_config(self):
@@ -526,6 +534,8 @@ class TestConvertQwen25VLToHF:
 
 class TestConvertQwen3VLToHF:
     """Test mcore→HF weight name conversion for Qwen3-VL (dense)."""
+
+    pytestmark = pytest.mark.npu
 
     @pytest.fixture()
     def tf_config(self):
@@ -958,6 +968,8 @@ class TestConvertQwen3VLMoEToHF:
     regression guards.
     """
 
+    pytestmark = pytest.mark.npu
+
     @pytest.fixture()
     def tf_config(self):
         """Mock TransformerConfig matching Qwen/Qwen3-VL-30B-A3B-Instruct text_config:
@@ -1224,6 +1236,8 @@ class TestConvertQwen3VLMoEToHF:
 
 class TestRemovePaddingVLM:
     """Test remove_padding handles VLM language_model prefixed params."""
+
+    pytestmark = pytest.mark.npu
 
     def test_vlm_embedding_padding_removed(self):
         """VLM language_model embedding should be trimmed to vocab_size."""

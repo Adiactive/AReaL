@@ -14,6 +14,8 @@ from areal.engine.megatron_utils.pipeline_parallel import (
 from areal.models.mcore.registry import make_hf_and_mcore_config
 from areal.utils.network import find_free_ports
 
+pytestmark = pytest.mark.npu
+
 
 @pytest.mark.parametrize(
     "model_name_or_path",

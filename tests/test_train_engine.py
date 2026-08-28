@@ -22,6 +22,8 @@ from areal.api.cli_args import (
 from areal.engine.fsdp_utils.attn_impl import BUILTIN_ATTN_IMPLS
 from areal.infra.platforms import current_platform
 
+pytestmark = pytest.mark.npu
+
 VOCAB_SIZE = 100
 MODEL_PATH = get_model_path(
     "/storage/openpsi/models/Qwen__Qwen3-0.6B/", "Qwen/Qwen3-0.6B"

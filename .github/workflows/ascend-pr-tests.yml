@@ -148,57 +148,17 @@ jobs:
 
       - name: Run CPU unit tests
         run: |
-          uv run pytest -q \
-            tests/test_adv_norm_config.py \
-            tests/test_allocation_mode.py \
-            tests/test_async_reward_wrapper.py \
-            tests/test_async_task_runner.py \
-            tests/test_attn_impl_validation.py \
-            tests/test_awex_runtime.py \
-            tests/test_clevr_reward.py \
-            tests/test_code_agent.py \
-            tests/test_dataset_mixture.py \
-            tests/test_domain_router_workflow.py \
-            tests/test_dpo.py \
-            tests/test_dynamic_import.py \
-            tests/test_eval_dispatch.py \
-            tests/test_functional.py \
-            tests/test_geometry3k_sft_dataset.py \
-            tests/test_math_verify_reward.py \
-            tests/test_mopd_loss.py \
-            tests/test_perf_trace_converter.py \
-            tests/test_ppo_stats.py \
-            tests/test_prox_approx.py \
-            tests/test_ray_scheduler.py \
-            tests/test_rejection_sampling.py \
-            tests/test_requires_padded_seq.py \
-            tests/test_seqpack.py \
-            tests/test_split_trajectory_for_dump.py \
-            tests/test_staleness_manager.py \
-            tests/test_teacher_domain_routing.py \
-            tests/test_utils.py \
-            tests/test_vllm_generation_request.py \
-            tests/test_vllm_pp_mismatch.py \
-            tests/test_workflow_detection.py
+          set -euo pipefail
 
-      - name: Run qualified slow CPU tests
-        run: |
-          uv run pytest -q -m slow \
-            tests/infra/data_service/test_epoch_crossing.py \
-            tests/infra/data_service/test_data_service_e2e.py
-
-      - name: Run additional CPU-compatible tests
-        run: |
+          uv run python scripts/select_cpu_tests.py \
+            --ignore tests/experimental/archon \
+            > /tmp/cpu-test-files.txt
+          mapfile -t cpu_test_files < /tmp/cpu-test-files.txt
+          test "${#cpu_test_files[@]}" -gt 0
+          printf 'Selected %s CPU test modules\n' "${#cpu_test_files[@]}"
           uv run pytest -q \
-            -m "not skip and not skipif" \
-            -k "not torchrun_multi_rank" \
-            tests/test_perf_tracer.py \
-            tests/test_megatron_async_save.py \
-            tests/test_megatron_engine_vlm.py::TestVisionModelDetection \
-            tests/test_mindspeed_gdn_patch.py \
-            tests/test_reassemble_cp_logprobs.py \
-            tests/test_vision_sp_shard.py \
-            tests/test_warmup_process_groups.py
+            -m "not npu and not multi_npu and not cuda and not nccl and not sglang and not vllm and not integration" \
+            "${cpu_test_files[@]}"
 
   npu-pr-tests:
     name: npu-pr-tests

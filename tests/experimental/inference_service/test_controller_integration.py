@@ -39,6 +39,7 @@ from tests.experimental.inference_service.integration_utils import (
 )
 
 SERVER_STARTUP_TIMEOUT = 180  # seconds
+pytestmark = pytest.mark.npu
 
 
 # =============================================================================

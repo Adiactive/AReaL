@@ -30,6 +30,8 @@ from areal.engine.core.model import (
 )
 from areal.engine.megatron_utils import packed_context_parallel as packed_cp
 
+pytestmark = pytest.mark.npu
+
 
 class _RecordingModel(torch.nn.Module):
     def __init__(self, output: torch.Tensor):

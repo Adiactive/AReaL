@@ -22,6 +22,7 @@ import torch
 from areal.utils.network import find_free_ports
 
 pytestmark = [
+    pytest.mark.cuda,
     pytest.mark.slow,
     pytest.mark.sglang,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),

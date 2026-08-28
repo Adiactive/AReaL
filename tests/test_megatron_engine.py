@@ -22,6 +22,7 @@ from areal.infra.platforms import current_platform
 from areal.utils import logging
 
 logger = logging.getLogger("TestMegatronEngine")
+pytestmark = pytest.mark.npu
 
 VOCAB_SIZE = 100
 MODEL_PATH = get_model_path(

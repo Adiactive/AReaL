@@ -20,7 +20,7 @@ logger = logging.getLogger("TestExamples")
 
 SUCCESS_PATTERN = re.compile(r"Epoch 1/\d+ Step 1/\d+ Train step 1/\d+ done\.")
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.npu, pytest.mark.slow]
 
 
 async def run_example(

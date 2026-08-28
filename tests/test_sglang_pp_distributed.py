@@ -36,6 +36,7 @@ from areal.utils import logging
 from areal.utils.network import find_free_ports
 
 logger = logging.getLogger("TestSglangPPDistributed")
+pytestmark = [pytest.mark.nccl, pytest.mark.sglang]
 
 # ---------------------------------------------------------------------------
 # Constants

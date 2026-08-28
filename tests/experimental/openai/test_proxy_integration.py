@@ -23,7 +23,7 @@ from areal.infra.scheduler.local import LocalScheduler
 from areal.infra.utils.proc import kill_process_tree
 from areal.utils import network, seeding
 
-pytestmark = pytest.mark.sglang
+pytestmark = [pytest.mark.cuda, pytest.mark.sglang]
 # =============================================================================
 # Test Configuration
 # =============================================================================

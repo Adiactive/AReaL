@@ -5,6 +5,8 @@ import pytest
 from areal.infra.platforms import current_platform
 from areal.utils.network import find_free_ports
 
+pytestmark = [pytest.mark.npu, pytest.mark.multi_npu]
+
 
 def _run_test_with_torchrun(world_size):
     port = find_free_ports(1)[0]

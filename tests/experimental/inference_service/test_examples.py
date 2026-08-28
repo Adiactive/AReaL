@@ -15,7 +15,12 @@ from areal.utils import logging
 
 logger = logging.getLogger("InferenceServiceExamples")
 
-pytestmark = pytest.mark.slow
+pytestmark = [
+    pytest.mark.multi_npu,
+    pytest.mark.npu,
+    pytest.mark.sglang,
+    pytest.mark.slow,
+]
 
 
 @pytest.mark.sglang

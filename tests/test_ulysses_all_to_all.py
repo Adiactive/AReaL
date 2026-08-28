@@ -13,6 +13,8 @@ import pytest
 from areal.infra.platforms import current_platform
 from areal.utils.network import find_free_ports
 
+pytestmark = pytest.mark.nccl
+
 
 def _run_test_with_torchrun(world_size: int, test_name: str):
     port = find_free_ports(1)[0]
@@ -55,6 +57,7 @@ def test_ulysses_all_to_all_backward(world_size):
 
 
 @pytest.mark.multi_gpu
+@pytest.mark.cuda
 @pytest.mark.parametrize("world_size", [2])
 def test_ulysses_all_to_all_compile(world_size):
     """Test torch.compile compatibility (no graph breaks)."""

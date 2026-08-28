@@ -26,6 +26,7 @@ from areal.engine import MegatronEngine
 from areal.utils import logging
 
 logger = logging.getLogger("FP8 BF16 RMSNorm Test")
+pytestmark = pytest.mark.cuda
 
 MODEL_PATH_BF16 = get_model_path(
     "/storage/openpsi/models/Qwen__Qwen3-0.6B/", "Qwen/Qwen3-0.6B"

@@ -20,6 +20,8 @@ from areal.api.alloc_mode import (
 from areal.api.io_struct import WeightUpdateMeta
 from areal.engine.sglang_remote import SGLangBackend
 
+pytestmark = pytest.mark.sglang
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from areal.models.tree_attn.triton_kernel import TRITON_AVAILABLE
 from areal.utils import logging
 
 logger = logging.getLogger("TreeTraining Test")
+pytestmark = pytest.mark.npu
 
 
 MODEL_PATH = get_model_path(
