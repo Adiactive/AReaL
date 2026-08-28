@@ -66,6 +66,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -146,7 +148,50 @@ jobs:
             --exclude "*.safetensors" \
             --max-workers 4
 
+      - name: Collect base CPU tests
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          AREAL_TEST_REPORT_DIR: /tmp/base-cpu-test-reports
+          CPU_TEST_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${CPU_TEST_BASE_SHA}" || "${CPU_TEST_BASE_SHA}" =~ ^0+$ ]]; then
+            echo "No base commit is available; skipping the comparison"
+            exit 0
+          fi
+
+          base_dir="$(mktemp -d)"
+          plugin_dir="$(mktemp -d)"
+          cleanup() {
+            rm -rf -- "${base_dir}" "${plugin_dir}"
+          }
+          trap cleanup EXIT
+
+          cp scripts/ci_test_report.py "${plugin_dir}/ci_test_report.py"
+          git archive "${CPU_TEST_BASE_SHA}" | tar -x -C "${base_dir}"
+
+          if ! (
+            cd "${base_dir}"
+            "${GITHUB_WORKSPACE}/.venv/bin/python" scripts/select_cpu_tests.py \
+              --ignore tests/experimental/archon \
+              > /tmp/base-cpu-test-files.txt
+            mapfile -t base_cpu_test_files < /tmp/base-cpu-test-files.txt
+            test "${#base_cpu_test_files[@]}" -gt 0
+            PYTHONPATH="${plugin_dir}:${base_dir}" \
+              "${GITHUB_WORKSPACE}/.venv/bin/python" -m pytest -q \
+              --collect-only \
+              -p ci_test_report \
+              -m "not npu and not multi_npu and not cuda and not nccl and not sglang and not vllm and not integration" \
+              "${base_cpu_test_files[@]}"
+          ) > /tmp/base-cpu-collection.log 2>&1; then
+            cat /tmp/base-cpu-collection.log
+            exit 1
+          fi
+
       - name: Run CPU unit tests
+        env:
+          AREAL_TEST_REPORT_DIR: /tmp/current-cpu-test-reports
         run: |
           set -euo pipefail
 
@@ -157,8 +202,34 @@ jobs:
           test "${#cpu_test_files[@]}" -gt 0
           printf 'Selected %s CPU test modules\n' "${#cpu_test_files[@]}"
           uv run pytest -q \
+            -p scripts.ci_test_report \
             -m "not npu and not multi_npu and not cuda and not nccl and not sglang and not vllm and not integration" \
             "${cpu_test_files[@]}"
+
+      - name: Report CPU test counts
+        if: always()
+        env:
+          CPU_TEST_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -d /tmp/current-cpu-test-reports ]]; then
+            echo "CPU test report was not produced"
+            exit 0
+          fi
+
+          report_args=(
+            --current /tmp/current-cpu-test-reports
+            --suite CPU
+            --step-summary "${GITHUB_STEP_SUMMARY}"
+          )
+          if [[ -d /tmp/base-cpu-test-reports ]]; then
+            report_args+=(
+              --base /tmp/base-cpu-test-reports
+              --base-sha "${CPU_TEST_BASE_SHA}"
+            )
+          fi
+          uv run python scripts/ci_test_report.py summarize "${report_args[@]}"
 
   npu-pr-tests:
     name: npu-pr-tests
@@ -187,6 +258,63 @@ jobs:
       - name: Install current AReaL repository
         run: pip install -e . --no-deps
 
+      - name: Collect base NPU test inventory
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          AREAL_TEST_REPORT_DIR: /tmp/base-npu-test-reports
+          NPU_TEST_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${NPU_TEST_BASE_SHA}" || "${NPU_TEST_BASE_SHA}" =~ ^0+$ ]]; then
+            echo "No base commit is available; skipping the comparison"
+            exit 0
+          fi
+
+          base_dir="$(mktemp -d)"
+          plugin_dir="$(mktemp -d)"
+          cleanup() {
+            rm -rf -- "${base_dir}" "${plugin_dir}"
+          }
+          trap cleanup EXIT
+
+          cp scripts/ci_test_report.py "${plugin_dir}/ci_test_report.py"
+          git archive "${NPU_TEST_BASE_SHA}" | tar -x -C "${base_dir}"
+
+          npu_test_files=(
+            tests/test_lock.py
+            tests/test_megatron_engine_distributed.py
+            tests/test_megatron_engine_vlm.py
+            tests/test_model_packed_seq_cp.py
+            tests/test_perf_tracer.py
+            tests/test_reassemble_cp_logprobs.py
+            tests/test_ulysses.py
+            tests/test_vocab_parallel.py
+          )
+          base_test_files=()
+          for test_file in "${npu_test_files[@]}"; do
+            if [[ -f "${base_dir}/${test_file}" ]]; then
+              base_test_files+=("${test_file}")
+            fi
+          done
+
+          if [[ "${#base_test_files[@]}" -eq 0 ]]; then
+            echo "No NPU test files exist at the base commit"
+            exit 0
+          fi
+
+          (
+            cd "${base_dir}"
+            PYTHONPATH="${plugin_dir}:${base_dir}" \
+              python -m pytest -q \
+              --collect-only \
+              -p ci_test_report \
+              "${base_test_files[@]}"
+          ) > /tmp/base-npu-collection.log 2>&1 || {
+            cat /tmp/base-npu-collection.log
+            exit 1
+          }
+
       - name: Verify NPU runtime
         run: |
           set -euo pipefail
@@ -208,15 +336,17 @@ jobs:
 
       - name: Run NPU-image dependency tests
         env:
+          AREAL_TEST_REPORT_DIR: /tmp/current-npu-test-reports
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
         run: |
-          pytest -q \
+          pytest -q -p scripts.ci_test_report \
             --deselect tests/test_megatron_engine_vlm.py::TestVisionModelDetection \
             tests/test_megatron_engine_vlm.py
-          pytest -q \
+          pytest -q -p scripts.ci_test_report \
             tests/test_model_packed_seq_cp.py
-          pytest -q -m skipif tests/test_reassemble_cp_logprobs.py
+          pytest -q -p scripts.ci_test_report \
+            -m skipif tests/test_reassemble_cp_logprobs.py
 
       - name: Verify cached NPU test models
         run: |
@@ -240,6 +370,7 @@ jobs:
 
       - name: Run NPU test suites
         env:
+          AREAL_TEST_REPORT_DIR: /tmp/current-npu-test-reports
           HF_HUB_OFFLINE: "1"
           PYTHONWARNINGS: "ignore"
           TRANSFORMERS_OFFLINE: "1"
@@ -310,7 +441,8 @@ jobs:
             (
               export ASCEND_RT_VISIBLE_DEVICES="${devices}"
               export TMPDIR="${test_tmpdir}"
-              timeout --kill-after=60s "${timeout_seconds}s" pytest -q "${selector}"
+              timeout --kill-after=60s "${timeout_seconds}s" \
+                pytest -q -p scripts.ci_test_report "${selector}"
             ) >"npu-test-logs/${name}.log" 2>&1 &
             active_pid=$!
 
@@ -352,7 +484,8 @@ jobs:
             (
               export ASCEND_RT_VISIBLE_DEVICES="${devices}"
               export TMPDIR="${lane_tmpdir}"
-              timeout --kill-after=60s 900s pytest -q "${selector}"
+              timeout --kill-after=60s 900s \
+                pytest -q -p scripts.ci_test_report "${selector}"
             ) >"npu-test-logs/${name}.log" 2>&1 &
             pids+=("$!")
             names+=("${name}")
@@ -520,6 +653,32 @@ jobs:
           compute_pid=""
 
           exit "${failed}"
+
+      - name: Report NPU test counts
+        if: always()
+        env:
+          NPU_TEST_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -d /tmp/current-npu-test-reports ]]; then
+            echo "NPU test report was not produced"
+            exit 0
+          fi
+
+          report_args=(
+            --current /tmp/current-npu-test-reports
+            --suite NPU
+            --step-summary "${GITHUB_STEP_SUMMARY}"
+          )
+          if [[ -d /tmp/base-npu-test-reports ]]; then
+            report_args+=(
+              --base /tmp/base-npu-test-reports
+              --base-sha "${NPU_TEST_BASE_SHA}"
+              --base-is-inventory
+            )
+          fi
+          python scripts/ci_test_report.py summarize "${report_args[@]}"
 
       - name: Upload NPU test logs
         if: always()
