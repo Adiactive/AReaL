@@ -36,6 +36,8 @@ from tests.utils import get_model_path
 from areal.infra.platforms import current_platform
 from areal.utils import logging
 
+pytestmark = pytest.mark.cuda
+
 MODEL_PATH_BF16 = get_model_path(
     "/storage/openpsi/models/Qwen__Qwen3-0.6B/", "Qwen/Qwen3-0.6B"
 )

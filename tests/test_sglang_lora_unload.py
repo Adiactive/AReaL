@@ -6,8 +6,12 @@ never unloads old versions, so sglang accumulates adapters until it hangs
 version that falls outside the retention window (kept for off-policy rollouts).
 """
 
+import pytest
+
 from areal.api.io_struct import WeightUpdateMeta
 from areal.engine.sglang_remote import SGLangBackend
+
+pytestmark = pytest.mark.sglang
 
 
 def _lora_meta(version, keep, lora_name="lora-gsm8k", path="/tmp/wu"):

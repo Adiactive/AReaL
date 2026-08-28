@@ -6,6 +6,8 @@ from areal.api.alloc_mode import ModelAllocation
 from areal.infra.platforms import current_platform
 from areal.utils.network import find_free_ports
 
+pytestmark = [pytest.mark.npu, pytest.mark.multi_npu]
+
 
 def _run_test_with_torchrun(test_type: str, alloc_mode: str, output: str):
     port = find_free_ports(1)[0]

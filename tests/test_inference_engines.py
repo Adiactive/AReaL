@@ -19,6 +19,8 @@ from areal.utils.data import concat_padded_tensors, get_batch_size
 from areal.utils.hf_utils import load_hf_tokenizer
 from areal.utils.pkg_version import is_available
 
+pytestmark = pytest.mark.npu
+
 MODEL_PATH = get_model_path(
     "/storage/openpsi/models/Qwen__Qwen3-0.6B/", "Qwen/Qwen3-0.6B"
 )
@@ -38,11 +40,11 @@ def _dummy_reward_fn(*args, **kwargs):
         pytest.param({"backend": "sglang", "method": "init"}, marks=pytest.mark.sglang),
         pytest.param(
             {"backend": "vllm", "method": "from_pretrained"},
-            marks=pytest.mark.vllm_from_pretrained,
+            marks=pytest.mark.vllm,
         ),
         pytest.param(
             {"backend": "sglang", "method": "from_pretrained"},
-            marks=pytest.mark.sglang_from_pretrained,
+            marks=pytest.mark.sglang,
         ),
     ],
     scope="module",

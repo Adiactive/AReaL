@@ -286,11 +286,16 @@ filterwarnings = [
     "ignore::UserWarning:torch.*",
     "ignore::UserWarning:transformers.*",
 ]
+# Unmarked tests run in CPU CI. Add capability markers only when required.
 markers = [
     "slow: mark test as slow, expected to cost more than 30 seconds and will not run in CI by default.",
     "ci: mark test as must-run in CI (only marked for slow tests).",
     "gpu: mark test that uses a single GPU",
     "multi_gpu: mark test that uses more than one GPU",
+    "npu: mark test that requires a single Ascend NPU",
+    "multi_npu: mark test that requires multiple Ascend NPUs",
+    "cuda: mark test that requires CUDA-specific APIs or kernels",
+    "nccl: mark test with a hard-coded NVIDIA NCCL backend",
     "sglang: mark test that requires the SGLang inference backend",
     "vllm: mark test that requires the vLLM inference backend",
     "integration: requires external services or credentials",

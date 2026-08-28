@@ -19,6 +19,8 @@ from areal.infra.platforms import current_platform
 from areal.utils.network import find_free_ports
 from areal.utils.offload import get_tms_env_vars
 
+pytestmark = pytest.mark.npu
+
 MODEL_PATH = get_model_path(
     "/storage/openpsi/models/Qwen__Qwen3-0.6B/", "Qwen/Qwen3-0.6B"
 )

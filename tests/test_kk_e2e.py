@@ -21,6 +21,8 @@ import pytest
 
 from areal.infra.platforms import current_platform
 
+pytestmark = pytest.mark.nccl
+
 # Path to the torchrun worker script
 WORKER_SCRIPT = os.path.join(os.path.dirname(__file__), "torchrun", "run_kk_vs_ffd.py")
 

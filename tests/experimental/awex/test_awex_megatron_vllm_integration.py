@@ -34,6 +34,13 @@ from areal.infra.utils.proc import kill_process_tree
 from areal.utils import network
 from areal.utils.pkg_version import is_available
 
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.multi_npu,
+    pytest.mark.npu,
+    pytest.mark.vllm,
+]
+
 IS_VLLM_INSTALLED = is_available("vllm")
 IS_AWEX_INSTALLED = is_available("awex")
 

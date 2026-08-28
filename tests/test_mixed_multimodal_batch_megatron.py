@@ -21,6 +21,8 @@ import torch
 
 from areal.utils.data import concat_padded_tensors
 
+pytestmark = pytest.mark.npu
+
 
 def _vision_row(seq_len: int = 5, n_patches: int = 4) -> dict:
     return {

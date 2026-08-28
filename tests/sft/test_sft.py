@@ -11,6 +11,8 @@ from tests.utils import get_dataset_path, get_model_path
 
 from areal.api.cli_args import SFTConfig, load_expr_config
 
+pytestmark = pytest.mark.npu
+
 
 @pytest.mark.parametrize(
     ("backend", "v2"),

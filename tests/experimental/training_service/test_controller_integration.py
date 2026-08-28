@@ -25,10 +25,10 @@ from areal.infra.scheduler.local import LocalScheduler
 LOCAL_MODEL_PATH = "/storage/openpsi/models/Qwen__Qwen3-0.6B/"
 LOCAL_MOE_MODEL_PATH = "/storage/openpsi/models/Qwen__Qwen3-30B-A3B/"
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="CUDA not available",
-)
+pytestmark = [
+    pytest.mark.cuda,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+]
 
 
 def _resolve_model_path_or_skip() -> str:

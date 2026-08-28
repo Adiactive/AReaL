@@ -5,6 +5,8 @@ import pytest
 from areal.infra.platforms import current_platform
 from areal.utils.network import find_free_ports
 
+pytestmark = pytest.mark.nccl
+
 
 def _run_test_with_torchrun(n_gpus: int):
     port = find_free_ports(1)[0]

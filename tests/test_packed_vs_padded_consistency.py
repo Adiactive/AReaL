@@ -16,6 +16,8 @@ from areal.utils.hf_utils import load_hf_processor_and_tokenizer
 from areal.utils.network import find_free_ports
 from areal.utils.seeding import set_random_seed
 
+pytestmark = pytest.mark.npu
+
 BS = 4
 MAX_ANSWER_LEN = 16
 MAX_PROMPT_LEN = 8

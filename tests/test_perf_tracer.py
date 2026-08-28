@@ -581,6 +581,7 @@ def _run_perf_tracer_torchrun(tmp_path: Path, world_size: int) -> None:
 
 
 @pytest.mark.multi_gpu
+@pytest.mark.multi_npu
 @pytest.mark.parametrize("world_size", [2])
 def test_perf_tracer_torchrun_multi_rank(tmp_path, world_size):
     device_count_fn = getattr(current_platform, "device_count", None)

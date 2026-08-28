@@ -3,6 +3,8 @@ import torch
 
 from areal.engine.megatron_utils.fp8 import FP8BlockwiseTensorHelper
 
+pytestmark = pytest.mark.npu
+
 
 @pytest.fixture(scope="module")
 def device():

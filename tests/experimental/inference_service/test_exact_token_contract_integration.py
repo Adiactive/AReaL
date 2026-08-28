@@ -31,6 +31,7 @@ from areal.utils.vision_canary import EXACT_TOKEN_REFUSAL
 LOCAL_MODEL_PATH = "/storage/openpsi/models/Qwen__Qwen3-VL-2B-Instruct/"
 HF_MODEL_ID = "Qwen/Qwen3-VL-2B-Instruct"
 SERVER_STARTUP_TIMEOUT = 300
+pytestmark = [pytest.mark.integration, pytest.mark.npu, pytest.mark.vllm]
 
 
 def _model_path() -> str:

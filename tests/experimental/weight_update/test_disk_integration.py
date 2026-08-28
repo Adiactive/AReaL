@@ -286,6 +286,7 @@ class TestDiskDisconnect:
 
 
 @pytest.mark.multi_gpu
+@pytest.mark.cuda
 @pytest.mark.slow
 @pytest.mark.sglang
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

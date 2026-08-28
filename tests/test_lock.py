@@ -49,6 +49,7 @@ def test_distributed_lock_single_rank(world_size):
 
 
 @pytest.mark.multi_gpu
+@pytest.mark.multi_npu
 @pytest.mark.parametrize("world_size", [2])
 def test_distributed_lock_multi_rank(world_size):
     _run_lock_test(world_size)

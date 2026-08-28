@@ -28,6 +28,8 @@ from areal.infra.platforms import current_platform
 from areal.utils.network import find_free_ports
 from areal.utils.testing_utils import DENSE_MODEL_PATHS, MOE_MODEL_PATHS
 
+pytestmark = [pytest.mark.npu, pytest.mark.multi_npu]
+
 _TORCHRUN_SCRIPT = (
     pathlib.Path(__file__).parent
     / "torchrun"

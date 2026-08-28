@@ -12,9 +12,11 @@ from areal.infra.platforms import current_platform
 from areal.infra.utils.proc import kill_process_tree
 from areal.utils.network import find_free_ports
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA not available"
-)
+pytestmark = [
+    pytest.mark.cuda,
+    pytest.mark.nccl,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+]
 
 # Project root so that torchrun workers can resolve `from tests.*` imports.
 # pytest adds "." via pyproject.toml `pythonpath`, but subprocesses don't inherit that.

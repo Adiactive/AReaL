@@ -15,6 +15,8 @@ import pytest
 import torch
 import torch.nn as nn
 
+pytestmark = pytest.mark.cuda
+
 CUDA_AVAILABLE = torch.cuda.is_available()
 GROUPED_MM_AVAILABLE = hasattr(torch, "_grouped_mm")
 

@@ -147,6 +147,7 @@ class TestGetGradNormFp32:
             f"norm_type={norm_type}: {result} != {expected}"
         )
 
+    @pytest.mark.cuda
     @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
     @pytest.mark.parametrize("norm_type", [1.0, 2.0, 3.0, float("inf")])
     def test_norm_types_gpu_no_offload(self, mock_process_groups, norm_type):
@@ -170,6 +171,7 @@ class TestGetGradNormFp32:
             f"norm_type={norm_type}: {result} != {expected}"
         )
 
+    @pytest.mark.cuda
     @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
     def test_offload_vs_non_offload_consistency_l2(self, mock_process_groups):
         """Test that offload and non-offload paths produce consistent L2 norm results."""
@@ -190,6 +192,7 @@ class TestGetGradNormFp32:
 
         assert abs(result_offload - result_no_offload) < 1e-4
 
+    @pytest.mark.cuda
     @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
     def test_offload_vs_non_offload_consistency_inf(self, mock_process_groups):
         """Test that offload and non-offload paths produce consistent inf norm results."""
@@ -292,6 +295,7 @@ class TestClipGradByTotalNormFp32:
         new_norm = compute_expected_grad_norm(list(model.parameters()), norm_type=2.0)
         assert new_norm < original_norm
 
+    @pytest.mark.cuda
     @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
     def test_clipping_reduces_grad_magnitude_gpu(self):
         """Test that clipping reduces gradient magnitude when norm exceeds max (GPU)."""
@@ -338,6 +342,7 @@ class TestClipGradByTotalNormFp32:
                 expected = original_grads[name] * expected_scale
                 assert torch.allclose(param.grad, expected, atol=1e-6)
 
+    @pytest.mark.cuda
     @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
     def test_clip_coefficient_applied_correctly_gpu(self):
         """Test that the clip coefficient is applied correctly (GPU)."""
@@ -382,6 +387,7 @@ class TestClipGradByTotalNormFp32:
             offload_params=True,
         )
 
+    @pytest.mark.cuda
     @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
     def test_offload_vs_non_offload_clipping_consistency(self):
         """Test that CPU and GPU paths produce same clipping results."""
@@ -454,6 +460,7 @@ class TestIntegration:
             expected_ratio = max_norm / (total_norm + 1e-6)
             assert abs(new_norm - total_norm * expected_ratio) < 1e-4
 
+    @pytest.mark.cuda
     @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
     def test_compute_and_clip_workflow_gpu(self):
         """Test the complete workflow of computing norm and clipping (GPU)."""
@@ -485,6 +492,7 @@ class TestIntegration:
             expected_ratio = max_norm / (total_norm + 1e-6)
             assert abs(new_norm - total_norm * expected_ratio) < 1e-4
 
+    @pytest.mark.cuda
     @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
     def test_cpu_gpu_consistency_end_to_end(self):
         """Test that CPU and GPU paths produce consistent results end-to-end."""

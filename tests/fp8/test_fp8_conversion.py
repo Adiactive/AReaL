@@ -12,6 +12,7 @@ from areal.infra.platforms import current_platform
 from areal.utils import logging
 
 logger = logging.getLogger("Test FP8 Conversion")
+pytestmark = pytest.mark.cuda
 
 try:
     import transformer_engine.pytorch as te
