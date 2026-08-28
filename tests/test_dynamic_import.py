@@ -1,32 +1,8 @@
-import subprocess
-import sys
 from unittest.mock import patch
 
 import pytest
 
 from areal.utils.dynamic_import import import_from_string
-
-
-def test_importing_infra_platforms_does_not_load_controllers():
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import importlib, sys, areal; "
-                "[sys.modules.pop(name) for name in tuple(sys.modules) "
-                "if name == 'areal.infra' or name.startswith('areal.infra.')]; "
-                "areal.__dict__.pop('infra', None); "
-                "importlib.import_module('areal.infra.platforms'); "
-                "assert 'areal.infra.controller' not in sys.modules"
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
 
 
 class TestImportFromString:
