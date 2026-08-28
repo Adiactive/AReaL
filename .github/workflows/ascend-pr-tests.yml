@@ -23,6 +23,7 @@ defaults:
 jobs:
   pre-commit:
     name: pre-commit
+    if: github.repository == 'areal-project/AReaL'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -49,6 +50,7 @@ jobs:
 
   cpu-unit-tests:
     name: cpu-unit-tests
+    if: github.repository == 'areal-project/AReaL'
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -236,10 +238,11 @@ jobs:
 
   npu-pr-tests:
     name: npu-pr-tests
+    if: github.repository == 'areal-project/AReaL'
     runs-on: linux-aarch64-a3-8
     timeout-minutes: 90
     container:
-      image: ghcr.io/hwvanici/areal_npu:v1.0.6rc1-a3
+      image: ghcr.io/hwvanici/areal_npu:a3-nightly
 
     env:
       AREAL_IS_IN_CI: "1"
@@ -259,7 +262,21 @@ jobs:
           clean: true
 
       - name: Install current AReaL repository
-        run: pip install -e . --no-deps
+        run: |
+          set -euo pipefail
+
+          cp pyproject.npu.toml pyproject.toml
+          pip install -e . --no-deps
+          python - <<'PY'
+          import importlib.metadata
+          import tomllib
+
+          with open("pyproject.toml", "rb") as project_file:
+              expected = tomllib.load(project_file)["project"]["version"]
+          actual = importlib.metadata.version("areal")
+          print(f"AReaL version: {actual}")
+          assert actual == expected, f"areal reports {actual}, expected {expected}"
+          PY
 
       - name: Collect base NPU test inventory
         if: github.event_name != 'workflow_dispatch'
@@ -300,7 +317,7 @@ jobs:
             set +e
             (
               cd "${base_dir}"
-              PYTHONPATH="${plugin_dir}:${base_dir}" \
+              PYTHONPATH="${plugin_dir}:${base_dir}:${PYTHONPATH:-}" \
                 python -m pytest -q \
                 --collect-only \
                 -p ci_test_report \

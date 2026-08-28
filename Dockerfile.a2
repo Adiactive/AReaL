@@ -96,7 +96,9 @@ RUN git clone https://github.com/NVIDIA-NeMo/Megatron-Bridge.git /areal-workspac
 
 # Copy AReaL source code
 COPY . /AReaL
-RUN uv pip install --no-deps -e /AReaL --system
+RUN cp /AReaL/pyproject.npu.toml /AReaL/pyproject.toml && \
+    uv pip install --no-deps -e /AReaL --system && \
+    python3 -c "import importlib.metadata as m, tomllib; expected = tomllib.load(open('/AReaL/pyproject.toml', 'rb'))['project']['version']; actual = m.version('areal'); assert actual == expected, f'areal reports {actual}, expected {expected}'"
 
 ENV PYTHONPATH=/areal-workspace/MindSpeed:/areal-workspace/Megatron-Bridge/src:$PYTHONPATH
 
