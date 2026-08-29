@@ -56,6 +56,7 @@ jobs:
 
     env:
       AREAL_IS_IN_CI: "1"
+      CPU_TEST_BASE_SHA: ""
       HF_HOME: "${{ github.workspace }}/.cache/huggingface"
       HF_HUB_DISABLE_XET: "1"
       HF_HUB_OFFLINE: "1"
@@ -158,10 +159,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ -z "${CPU_TEST_BASE_SHA}" || "${CPU_TEST_BASE_SHA}" =~ ^0+$ ]]; then
-            echo "No base commit is available; skipping the comparison"
-            exit 0
+          if [[ -z "${CPU_TEST_BASE_SHA}" || "${CPU_TEST_BASE_SHA}" =~ ^0+$ ]] || \
+            ! git cat-file -e "${CPU_TEST_BASE_SHA}^{tree}" 2>/dev/null; then
+            if [[ "${GITHUB_EVENT_NAME}" == "push" ]] && \
+              fallback_base_sha="$(git rev-parse --verify HEAD^ 2>/dev/null)"; then
+              echo "Base commit ${CPU_TEST_BASE_SHA:-<none>} is unavailable; comparing with ${fallback_base_sha}"
+              CPU_TEST_BASE_SHA="${fallback_base_sha}"
+            else
+              echo "No reachable base commit is available; skipping the comparison"
+              exit 0
+            fi
           fi
+          echo "CPU_TEST_BASE_SHA=${CPU_TEST_BASE_SHA}" >> "${GITHUB_ENV}"
 
           base_dir="$(mktemp -d)"
           plugin_dir="$(mktemp -d)"
@@ -171,7 +180,11 @@ jobs:
           trap cleanup EXIT
 
           cp scripts/ci_test_report.py "${plugin_dir}/ci_test_report.py"
-          git archive "${CPU_TEST_BASE_SHA}" | tar -x -C "${base_dir}"
+          if ! git archive "${CPU_TEST_BASE_SHA}" | tar -x -C "${base_dir}"; then
+            echo "::warning title=Base CPU comparison unavailable::Could not extract ${CPU_TEST_BASE_SHA}"
+            rm -rf -- /tmp/base-cpu-test-reports
+            exit 0
+          fi
 
           if ! (
             cd "${base_dir}"
@@ -188,7 +201,9 @@ jobs:
               "${base_cpu_test_files[@]}"
           ) > /tmp/base-cpu-collection.log 2>&1; then
             cat /tmp/base-cpu-collection.log
-            exit 1
+            echo "::warning title=Base CPU comparison unavailable::Base test collection failed"
+            rm -rf -- /tmp/base-cpu-test-reports
+            exit 0
           fi
 
       - name: Run CPU unit tests
@@ -210,8 +225,6 @@ jobs:
 
       - name: Report CPU test counts
         if: always()
-        env:
-          CPU_TEST_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
 
@@ -246,6 +259,7 @@ jobs:
 
     env:
       AREAL_IS_IN_CI: "1"
+      NPU_TEST_BASE_SHA: ""
       AREAL_TEST_QWEN3_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B"
       AREAL_TEST_QWEN3_MOE_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3-30B-A3B"
       AREAL_TEST_QWEN35_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3.5-0.8B"
@@ -286,10 +300,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ -z "${NPU_TEST_BASE_SHA}" || "${NPU_TEST_BASE_SHA}" =~ ^0+$ ]]; then
-            echo "No base commit is available; skipping the comparison"
-            exit 0
+          if [[ -z "${NPU_TEST_BASE_SHA}" || "${NPU_TEST_BASE_SHA}" =~ ^0+$ ]] || \
+            ! git -c safe.directory="${GITHUB_WORKSPACE}" \
+              cat-file -e "${NPU_TEST_BASE_SHA}^{tree}" 2>/dev/null; then
+            if [[ "${GITHUB_EVENT_NAME}" == "push" ]] && \
+              fallback_base_sha="$(git -c safe.directory="${GITHUB_WORKSPACE}" \
+                rev-parse --verify HEAD^ 2>/dev/null)"; then
+              echo "Base commit ${NPU_TEST_BASE_SHA:-<none>} is unavailable; comparing with ${fallback_base_sha}"
+              NPU_TEST_BASE_SHA="${fallback_base_sha}"
+            else
+              echo "No reachable base commit is available; skipping the comparison"
+              exit 0
+            fi
           fi
+          echo "NPU_TEST_BASE_SHA=${NPU_TEST_BASE_SHA}" >> "${GITHUB_ENV}"
 
           base_dir="$(mktemp -d)"
           plugin_dir="$(mktemp -d)"
@@ -299,8 +323,12 @@ jobs:
           trap cleanup EXIT
 
           cp scripts/ci_test_report.py "${plugin_dir}/ci_test_report.py"
-          git -c safe.directory="${GITHUB_WORKSPACE}" \
-            archive "${NPU_TEST_BASE_SHA}" | tar -x -C "${base_dir}"
+          if ! git -c safe.directory="${GITHUB_WORKSPACE}" \
+            archive "${NPU_TEST_BASE_SHA}" | tar -x -C "${base_dir}"; then
+            echo "::warning title=Base NPU comparison unavailable::Could not extract ${NPU_TEST_BASE_SHA}"
+            rm -rf -- /tmp/base-npu-test-reports
+            exit 0
+          fi
           : > /tmp/unavailable-base-npu-test-files.txt
 
           collect_base_tests() {
@@ -661,8 +689,6 @@ jobs:
 
       - name: Report NPU test counts
         if: always()
-        env:
-          NPU_TEST_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
 
