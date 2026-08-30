@@ -4,9 +4,6 @@ on:
   pull_request:
     branches:
       - ascend
-  push:
-    branches:
-      - ascend
   workflow_dispatch:
 
 permissions:
