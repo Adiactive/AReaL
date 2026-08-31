@@ -513,10 +513,8 @@ class TestOnlineCallbackFlow:
 
 
 class TestInferenceServiceWorkflow:
-    @pytest.mark.skip(reason="pending /export_trajectories traj schema migration")
     @pytest.mark.asyncio
     async def test_online_mode_waits_on_controller(self):
-        mock_interaction = MagicMock(reward=1.0)
         controller = MagicMock()
         controller.wait_for_online_trajectory = AsyncMock(
             return_value={"session_id": "sess-1", "trajectory_id": 7}
@@ -538,17 +536,17 @@ class TestInferenceServiceWorkflow:
                 "areal.experimental.inference_service.controller.workflow.stats_tracker"
             ) as mock_st,
             patch(
-                "areal.experimental.inference_service.controller.workflow.deserialize_interactions"
+                "areal.experimental.inference_service.controller.workflow.deserialize_value"
             ) as mock_deserialize,
         ):
-            mock_deserialize.return_value = {"chatcmpl-1": mock_interaction}
+            mock_deserialize.return_value = {"interactions": [{"reward": 1.0}]}
 
             # _run_online uses ``async with http_session.post(...)`` directly,
             # so the mock must support the async context-manager protocol.
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json = AsyncMock(
-                return_value={"interactions": {"chatcmpl-1": {}}}
+                return_value={"traj": {"serialized": "trajectory"}}
             )
 
             mock_cm = MagicMock()
@@ -565,10 +563,10 @@ class TestInferenceServiceWorkflow:
             result = await workflow.arun_episode(engine=MagicMock(), data={})
 
         assert result is not None
-        assert "chatcmpl-1" in result
+        assert result["interactions"][0]["reward"] == 1.0
         controller.wait_for_online_trajectory.assert_awaited_once_with(timeout=3.0)
         mock_http_session.post.assert_called_once()
-        mock_deserialize.assert_called_once_with({"chatcmpl-1": {}})
+        mock_deserialize.assert_called_once_with({"serialized": "trajectory"})
 
     @pytest.mark.asyncio
     async def test_offline_mode_runs_agent(self):

@@ -27,6 +27,8 @@ from areal.experimental.openai.client import (
     _build_messages_list,
     _extract_images_from_messages,
 )
+from areal.infra.rpc.rtensor import RTensor, fetch
+from areal.infra.rpc.serialization import deserialize_value
 
 # ---------------------------------------------------------------------------
 # Real image fixtures
@@ -57,6 +59,12 @@ def _materialize(obj):
         return [_materialize(item) for item in obj]
     except TypeError:
         return obj
+
+
+def _response_first_token(response: httpx.Response) -> int:
+    input_ids = deserialize_value(response.json()["traj"])["input_ids"]
+    assert isinstance(input_ids, RTensor)
+    return int(fetch(input_ids.shard.shard_id).reshape(-1)[0])
 
 
 @pytest.fixture
@@ -679,7 +687,6 @@ class TestDataProxyImagePassthrough:
         assert messages[0]["content"][1]["type"] == "image_url"
         assert messages[0]["content"][1]["image_url"]["url"] == data_uri
 
-    @pytest.mark.skip(reason="pending /export_trajectories traj schema migration")
     @pytest.mark.asyncio
     async def test_session_lifecycle_with_image_messages(self, image_test_client):
         """Full lifecycle: start → image chat → reward → end → export."""
@@ -737,9 +744,7 @@ class TestDataProxyImagePassthrough:
             headers={"Authorization": f"Bearer {ADMIN_KEY}"},
         )
         assert resp.status_code == 200
-        data = resp.json()
-        assert "interactions" in data
-        assert len(data["interactions"]) == 1
+        assert _response_first_token(resp) == 100
 
     @pytest.mark.asyncio
     async def test_mixed_text_and_image_messages(self, image_test_client):

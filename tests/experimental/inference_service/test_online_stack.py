@@ -28,6 +28,8 @@ from areal.experimental.inference_service.router.app import (
     create_app as create_router_app,
 )
 from areal.experimental.inference_service.router.config import RouterConfig
+from areal.infra.rpc.rtensor import RTensor, fetch
+from areal.infra.rpc.serialization import deserialize_value
 
 ADMIN_KEY = "areal-admin-key"
 DATA_PROXY_ADDR = "http://data-proxy"
@@ -48,6 +50,7 @@ def _make_mock_areal_client():
         import torch
 
         nonlocal call_index
+        interaction_index = call_index
         completion = ChatCompletion(
             id=f"chatcmpl-test{call_index}",
             choices=[
@@ -71,7 +74,9 @@ def _make_mock_areal_client():
             output_message_list=[{"role": "assistant", "content": "Hello!"}],
         )
         interaction._cache = {
-            "input_ids": torch.tensor([[100, 200, 300, 1234, 5678, 2]]),
+            "input_ids": torch.tensor(
+                [[100 + interaction_index, 200, 300, 1234, 5678, 2]]
+            ),
             "loss_mask": torch.tensor([[0, 0, 0, 1, 1, 1]]),
             "logprobs": torch.tensor([[0.0, 0.0, 0.0, -0.5, -0.3, -0.1]]),
             "versions": torch.tensor([[-1, -1, -1, 0, 0, 0]]),
@@ -251,7 +256,12 @@ def _hitl_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {ADMIN_KEY}"}
 
 
-@pytest.mark.skip(reason="pending /export_trajectories traj schema migration")
+def _response_first_token(response: httpx.Response) -> int:
+    input_ids = deserialize_value(response.json()["traj"])["input_ids"]
+    assert isinstance(input_ids, RTensor)
+    return int(fetch(input_ids.shard.shard_id).reshape(-1)[0])
+
+
 @pytest.mark.asyncio
 async def test_online_stack_latest_ready_export_keeps_session_pinned(online_stack):
     gw = online_stack["gateway_client"]
@@ -287,13 +297,12 @@ async def test_online_stack_latest_ready_export_keeps_session_pinned(online_stac
         headers=_admin_headers(),
     )
     assert export_resp.status_code == 200
-    assert list(export_resp.json()["interactions"]) == ["chatcmpl-test1"]
+    assert _response_first_token(export_resp) == 101
 
     session_registry = router_app.state.session_registry
     assert await session_registry.lookup_by_id("__hitl__") == DATA_PROXY_ADDR
 
 
-@pytest.mark.skip(reason="pending /export_trajectories traj schema migration")
 @pytest.mark.asyncio
 async def test_online_stack_explicit_then_latest_export(online_stack):
     gw = online_stack["gateway_client"]
@@ -336,7 +345,7 @@ async def test_online_stack_explicit_then_latest_export(online_stack):
         headers=_admin_headers(),
     )
     assert explicit_resp.status_code == 200
-    assert list(explicit_resp.json()["interactions"]) == ["chatcmpl-test0"]
+    assert _response_first_token(explicit_resp) == 100
 
     latest_resp = await gw.post(
         "/export_trajectories",
@@ -349,7 +358,7 @@ async def test_online_stack_explicit_then_latest_export(online_stack):
         headers=_admin_headers(),
     )
     assert latest_resp.status_code == 200
-    assert list(latest_resp.json()["interactions"]) == ["chatcmpl-test1"]
+    assert _response_first_token(latest_resp) == 101
 
 
 @pytest.mark.asyncio
