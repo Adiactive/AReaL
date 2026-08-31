@@ -249,7 +249,7 @@ jobs:
   npu-pr-tests:
     name: npu-pr-tests
     if: github.repository == 'areal-project/AReaL'
-    runs-on: linux-aarch64-a3-8
+    runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 90
     container:
       image: ghcr.io/hwvanici/areal_npu:a3-nightly
@@ -259,7 +259,7 @@ jobs:
       NPU_TEST_BASE_SHA: ""
       AREAL_TEST_QWEN3_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B"
       AREAL_TEST_QWEN3_MOE_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3-30B-A3B"
-      AREAL_TEST_QWEN35_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3.5-0.8B"
+      AREAL_TEST_QWEN35_PATH: "/root/.cache/modelscope/hub/models/Qwen3.5-0.8B"
       AREAL_TEST_QWEN35_MOE_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3.5-35B-A3B"
       HF_ENDPOINT: "https://hf-mirror.com"
       HF_HUB_DISABLE_XET: "1"
@@ -392,6 +392,26 @@ jobs:
 
           npu-smi info
 
+      - name: Verify cached NPU test models
+        run: |
+          set -euo pipefail
+
+          verify_model() {
+            local model_path="$1"
+            local weight_file
+
+            [[ -f "${model_path}/config.json" ]] || return 1
+            weight_file=$(find -L "${model_path}" -maxdepth 1 -type f \
+              \( -name '*.safetensors' -o -name '*.bin' \) -print -quit)
+            [[ -n "${weight_file}" ]]
+            echo "Using cached model: ${model_path}"
+          }
+
+          verify_model "${AREAL_TEST_QWEN3_PATH}"
+          verify_model "${AREAL_TEST_QWEN3_MOE_PATH}"
+          verify_model "${AREAL_TEST_QWEN35_PATH}"
+          verify_model "${AREAL_TEST_QWEN35_MOE_PATH}"
+
       - name: Run NPU-image dependency tests
         env:
           AREAL_TEST_REPORT_DIR: /tmp/current-npu-test-reports
@@ -405,26 +425,6 @@ jobs:
             tests/test_model_packed_seq_cp.py
           pytest -q -p scripts.ci_test_report \
             -m skipif tests/test_reassemble_cp_logprobs.py
-
-      - name: Verify cached NPU test models
-        run: |
-          set -euo pipefail
-
-          verify_model() {
-            local model_path="$1"
-            local weight_file
-
-            test -f "${model_path}/config.json"
-            weight_file=$(find -L "${model_path}" -maxdepth 1 -type f \
-              \( -name '*.safetensors' -o -name '*.bin' \) -print -quit)
-            test -n "${weight_file}"
-            echo "Using cached model: ${model_path}"
-          }
-
-          verify_model "${AREAL_TEST_QWEN3_PATH}"
-          verify_model "${AREAL_TEST_QWEN3_MOE_PATH}"
-          verify_model "${AREAL_TEST_QWEN35_PATH}"
-          verify_model "${AREAL_TEST_QWEN35_MOE_PATH}"
 
       - name: Run NPU test suites
         env:
