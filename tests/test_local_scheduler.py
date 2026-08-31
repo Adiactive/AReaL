@@ -30,12 +30,6 @@ from areal.infra.scheduler.exceptions import (
 from areal.infra.scheduler.local import LocalScheduler, WorkerInfo
 from areal.infra.utils.proc import kill_process_tree
 
-# Skip all tests in this module by default - run manually only
-pytestmark = pytest.mark.skip(
-    reason="LocalScheduler tests have unexpected behavior on GCP CI machines. "
-    "Run manually with: pytest tests/test_local_scheduler.py"
-)
-
 # ============================================================================
 # Fixtures and Helper Functions
 # ============================================================================
@@ -127,6 +121,10 @@ def create_scheduler(tmp_path, gpu_devices=None, **kwargs):
     }
     defaults.update(kwargs)
     return LocalScheduler(**defaults)
+
+
+def create_rpc_scheduling_spec():
+    return SchedulingSpec(cmd="python -m areal.infra.rpc.rpc_server")
 
 
 def create_worker_info(
@@ -397,7 +395,7 @@ class TestWorkerCreation:
         scheduler = create_scheduler(tmp_path, gpu_devices=[0, 1])
 
         with patch.object(scheduler, "_configure_worker", return_value=None):
-            job = Job(replicas=2, role="rollout")
+            job = Job(replicas=2, role="rollout", tasks=[create_rpc_scheduling_spec()])
             worker_ids = scheduler.create_workers(job)
 
             assert worker_ids == ["rollout/0", "rollout/1"]
@@ -703,7 +701,7 @@ class TestWorkerCreation:
             mock_proc.poll.return_value = None
             mock_popen.return_value = mock_proc
 
-            job = Job(replicas=1, role="test")
+            job = Job(replicas=1, role="test", tasks=[create_rpc_scheduling_spec()])
             with patch.object(scheduler, "_configure_worker", return_value=None):
                 scheduler.create_workers(job)
 
@@ -729,7 +727,7 @@ class TestWorkerCreation:
         assert "replicas must be greater than 0" in str(exc_info.value)
 
     def test_create_workers_invalid_specs_length(self, tmp_path):
-        """Should raise WorkerCreationError when tasks length is invalid."""
+        """Should reject a task count that cannot map to worker replicas."""
         scheduler = create_scheduler(tmp_path, gpu_devices=[0, 1])
 
         job = Job(
@@ -747,11 +745,12 @@ class TestWorkerCreation:
             ],  # 2 tasks for 3 replicas
         )
 
-        with pytest.raises(WorkerCreationError) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             scheduler.create_workers(job)
 
-        assert "schedulings length (2) must be 1 or equal to replicas (3)" in str(
-            exc_info.value
+        assert (
+            "Number of scheduling specs (2) must be 1 or match number of workers (3)"
+            in str(exc_info.value)
         )
 
     @patch("areal.infra.scheduler.local.gethostip")
@@ -777,7 +776,7 @@ class TestWorkerCreation:
 
         scheduler = create_scheduler(tmp_path)
 
-        job = Job(replicas=1, role="test")
+        job = Job(replicas=1, role="test", tasks=[create_rpc_scheduling_spec()])
 
         with patch.object(
             scheduler, "_read_log_tail", return_value="Error: Failed to start server"
@@ -809,7 +808,7 @@ class TestWorkerCreation:
         mock_popen.side_effect = [conflict_proc, success_proc]
 
         scheduler = create_scheduler(tmp_path)
-        job = Job(replicas=1, role="test")
+        job = Job(replicas=1, role="test", tasks=[create_rpc_scheduling_spec()])
 
         with patch.object(
             scheduler,
@@ -844,7 +843,7 @@ class TestWorkerCreation:
 
         scheduler = create_scheduler(tmp_path)
 
-        job = Job(replicas=2, role="test")
+        job = Job(replicas=2, role="test", tasks=[create_rpc_scheduling_spec()])
 
         with patch.object(scheduler, "_cleanup_workers") as mock_cleanup:
             with pytest.raises(WorkerCreationError) as exc_info:
@@ -1809,7 +1808,7 @@ class TestEdgeCases:
 
         scheduler = create_scheduler(tmp_path)
 
-        job = Job(replicas=5, role="worker")
+        job = Job(replicas=5, role="worker", tasks=[create_rpc_scheduling_spec()])
         with patch.object(scheduler, "_configure_worker", return_value=None):
             worker_ids = scheduler.create_workers(job)
 
@@ -1880,7 +1879,7 @@ class TestColocationBehavior:
         scheduler = create_scheduler(tmp_path, gpu_devices=[0, 1])
 
         # Create target workers
-        actor_job = Job(replicas=1, role="actor")
+        actor_job = Job(replicas=1, role="actor", tasks=[create_rpc_scheduling_spec()])
         with patch.object(scheduler, "_configure_worker", return_value=None):
             scheduler.create_workers(actor_job)
 
@@ -1888,6 +1887,7 @@ class TestColocationBehavior:
         ref_job = Job(
             replicas=1,
             role="ref",
+            tasks=[create_rpc_scheduling_spec()],
             scheduling_strategy=SchedulingStrategy(
                 type=SchedulingStrategyType.colocation, target="actor", fork=False
             ),
@@ -1922,7 +1922,7 @@ class TestColocationBehavior:
         scheduler = create_scheduler(tmp_path)
 
         # Create target workers
-        actor_job = Job(replicas=1, role="actor")
+        actor_job = Job(replicas=1, role="actor", tasks=[create_rpc_scheduling_spec()])
         with patch.object(scheduler, "_configure_worker", return_value=None):
             scheduler.create_workers(actor_job)
 
@@ -1930,6 +1930,7 @@ class TestColocationBehavior:
         ref_job = Job(
             replicas=1,
             role="ref",
+            tasks=[create_rpc_scheduling_spec()],
             scheduling_strategy=SchedulingStrategy(
                 type=SchedulingStrategyType.colocation, target="actor", fork=False
             ),
@@ -1977,7 +1978,7 @@ class TestColocationBehavior:
         scheduler = create_scheduler(tmp_path, gpu_devices=[0, 1])
 
         # Create target workers with 2 replicas
-        actor_job = Job(replicas=2, role="actor")
+        actor_job = Job(replicas=2, role="actor", tasks=[create_rpc_scheduling_spec()])
         with patch.object(scheduler, "_configure_worker", return_value=None):
             scheduler.create_workers(actor_job)
 
@@ -1985,6 +1986,7 @@ class TestColocationBehavior:
         ref_job = Job(
             replicas=1,  # Mismatch!
             role="ref",
+            tasks=[create_rpc_scheduling_spec()],
             scheduling_strategy=SchedulingStrategy(
                 type=SchedulingStrategyType.colocation, target="actor"
             ),
@@ -2013,6 +2015,7 @@ class TestColocationBehavior:
         ref_job = Job(
             replicas=1,
             role="ref",
+            tasks=[create_rpc_scheduling_spec()],
             scheduling_strategy=SchedulingStrategy(
                 type=SchedulingStrategyType.colocation, target="nonexistent"
             ),
@@ -2327,6 +2330,7 @@ class TestForkColocationBehavior:
             ref_job = Job(
                 replicas=1,
                 role="ref",
+                tasks=[create_rpc_scheduling_spec()],
                 scheduling_strategy=SchedulingStrategy(
                     type=SchedulingStrategyType.colocation, target="actor", fork=True
                 ),
@@ -2457,6 +2461,7 @@ class TestForkColocationBehavior:
             ref_job = Job(
                 replicas=1,  # Mismatch - actor has 2 replicas!
                 role="ref",
+                tasks=[create_rpc_scheduling_spec()],
                 scheduling_strategy=SchedulingStrategy(
                     type=SchedulingStrategyType.colocation, target="actor", fork=True
                 ),
@@ -2480,6 +2485,7 @@ class TestForkColocationBehavior:
         ref_job = Job(
             replicas=1,
             role="ref",
+            tasks=[create_rpc_scheduling_spec()],
             scheduling_strategy=SchedulingStrategy(
                 type=SchedulingStrategyType.colocation, target="nonexistent", fork=True
             ),
@@ -2573,6 +2579,7 @@ class TestForkColocationBehavior:
             ref_job = Job(
                 replicas=1,
                 role="ref",
+                tasks=[create_rpc_scheduling_spec()],
                 scheduling_strategy=SchedulingStrategy(
                     type=SchedulingStrategyType.colocation, target="actor", fork=True
                 ),

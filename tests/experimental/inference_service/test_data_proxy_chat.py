@@ -18,6 +18,8 @@ from areal.experimental.inference_service.data_proxy.session import (
     SessionData,
     SessionStore,
 )
+from areal.infra.rpc.rtensor import RTensor, fetch
+from areal.infra.rpc.serialization import deserialize_value
 
 # =============================================================================
 # Fixtures
@@ -76,6 +78,7 @@ def mock_areal_client():
         import torch
 
         nonlocal call_index
+        interaction_index = call_index
 
         completion = ChatCompletion(
             id=f"chatcmpl-test{call_index}",
@@ -103,7 +106,9 @@ def mock_areal_client():
         )
         # Pre-populate _cache so to_tensor_dict() works without ModelResponse
         interaction._cache = {
-            "input_ids": torch.tensor([[100, 200, 300, 1234, 5678, 2]]),
+            "input_ids": torch.tensor(
+                [[100 + interaction_index, 200, 300, 1234, 5678, 2]]
+            ),
             "loss_mask": torch.tensor([[0, 0, 0, 1, 1, 1]]),
             "logprobs": torch.tensor([[0.0, 0.0, 0.0, -0.5, -0.3, -0.1]]),
             "versions": torch.tensor([[-1, -1, -1, 0, 0, 0]]),
@@ -156,6 +161,12 @@ def admin_headers():
 
 def session_headers(api_key: str):
     return {"Authorization": f"Bearer {api_key}"}
+
+
+def response_first_token(response: httpx.Response) -> int:
+    input_ids = deserialize_value(response.json()["traj"])["input_ids"]
+    assert isinstance(input_ids, RTensor)
+    return int(fetch(input_ids.shard.shard_id).reshape(-1)[0])
 
 
 # =============================================================================
@@ -1029,7 +1040,6 @@ async def test_online_set_reward_duplicate_is_idempotent(client):
     assert second.json()["ready_transition"] is False
 
 
-@pytest.mark.skip(reason="pending /export_trajectories traj schema migration")
 @pytest.mark.asyncio
 async def test_online_export_latest_ready_without_trajectory_id(client):
     token = ADMIN_KEY
@@ -1071,11 +1081,9 @@ async def test_online_export_latest_ready_without_trajectory_id(client):
         headers=admin_headers(),
     )
     assert export_resp.status_code == 200
-    interactions = export_resp.json()["interactions"]
-    assert list(interactions) == ["chatcmpl-test1"]
+    assert response_first_token(export_resp) == 101
 
 
-@pytest.mark.skip(reason="pending /export_trajectories traj schema migration")
 @pytest.mark.asyncio
 async def test_online_export_explicit_trajectory_id(client):
     token = ADMIN_KEY
@@ -1122,8 +1130,7 @@ async def test_online_export_explicit_trajectory_id(client):
         headers=admin_headers(),
     )
     assert export_resp.status_code == 200
-    interactions = export_resp.json()["interactions"]
-    assert list(interactions) == ["chatcmpl-test0"]
+    assert response_first_token(export_resp) == 100
 
     health = await client.get("/health")
     assert health.status_code == 200
@@ -1162,7 +1169,6 @@ async def test_health_sessions_count_after_start(client):
 # =============================================================================
 
 
-@pytest.mark.skip(reason="pending /export_trajectories traj schema migration")
 @pytest.mark.asyncio
 async def test_full_session_lifecycle(client, mock_areal_client):
     """Test the complete flow: start → chat → set_reward → export."""
@@ -1205,5 +1211,4 @@ async def test_full_session_lifecycle(client, mock_areal_client):
         headers=admin_headers(),
     )
     assert resp.status_code == 200
-    data = resp.json()
-    assert "interactions" in data
+    assert response_first_token(resp) == 100

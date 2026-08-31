@@ -23,6 +23,44 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+_ISOLATED_MODULES = (
+    "megatron",
+    "megatron.core",
+    "megatron.core.dist_checkpointing",
+    "megatron.core.dist_checkpointing.mapping",
+    "megatron.core.dist_checkpointing.serialization",
+    "megatron.core.dist_checkpointing.strategies",
+    "megatron.core.dist_checkpointing.strategies.async_utils",
+    "megatron.core.dist_checkpointing.strategies.fully_parallel",
+    "areal",
+    "areal.engine",
+    "areal.engine.megatron_utils",
+    "areal.engine.megatron_utils.checkpointer",
+    "areal.infra",
+    "areal.infra.platforms",
+    "areal.utils",
+    "areal.utils.logging",
+    "areal.utils.stats_tracker",
+)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def isolate_checkpointer_modules():
+    missing = object()
+    original_modules = {
+        name: sys.modules.get(name, missing) for name in _ISOLATED_MODULES
+    }
+    for name in _ISOLATED_MODULES:
+        sys.modules.pop(name, None)
+
+    yield
+
+    for name in _ISOLATED_MODULES:
+        sys.modules.pop(name, None)
+        original = original_modules[name]
+        if original is not missing:
+            sys.modules[name] = original
+
 
 def _import_checkpointer():
     """Import the checkpointer module without triggering the full areal package."""
@@ -31,23 +69,12 @@ def _import_checkpointer():
 
     # Stub out heavy/optional dependencies so the module loads on a CPU box
     # without Megatron or a Stager-capable torch build.
-    for path in (
-        "megatron",
-        "megatron.core",
-        "megatron.core.dist_checkpointing",
-        "megatron.core.dist_checkpointing.mapping",
-        "megatron.core.dist_checkpointing.serialization",
-        "megatron.core.dist_checkpointing.strategies",
-        "megatron.core.dist_checkpointing.strategies.async_utils",
-        "megatron.core.dist_checkpointing.strategies.fully_parallel",
-        "areal",
-        "areal.engine",
-        "areal.engine.megatron_utils",
-        "areal.infra",
-        "areal.infra.platforms",
-        "areal.utils",
-        "areal.utils.logging",
-    ):
+    for path in _ISOLATED_MODULES:
+        if path in (
+            "areal.engine.megatron_utils.checkpointer",
+            "areal.utils.stats_tracker",
+        ):
+            continue
         sys.modules.setdefault(path, types.ModuleType(path))
 
     sys.modules["megatron.core"].dist_checkpointing = sys.modules[
@@ -196,13 +223,6 @@ def test_close_is_idempotent(patched_checkpointer):
     assert manager._async_queue is None
 
 
-@pytest.mark.skip(
-    reason="Fixture is not isolated across test files: if test_megatron_engine "
-    "(or any test that imports MegatronEngine) runs first, "
-    "areal.engine.megatron_utils.checkpointer is already cached in sys.modules, "
-    "so _import_checkpointer's stub-installation branch (which mocks "
-    "areal.utils.stats_tracker.scalar) is skipped. Tracked in a follow-up issue."
-)
 def test_async_save_reports_queue_depth_only(patched_checkpointer, tmp_path):
     """async_save emits ckpt/async_save_queue_depth on schedule and no other metric.
 
@@ -236,13 +256,6 @@ def test_async_save_reports_queue_depth_only(patched_checkpointer, tmp_path):
     assert all_keys == {"ckpt/async_save_queue_depth"}
 
 
-@pytest.mark.skip(
-    reason="Fixture is not isolated across test files: if test_megatron_engine "
-    "(or any test that imports MegatronEngine) runs first, "
-    "areal.engine.megatron_utils.checkpointer is already cached in sys.modules, "
-    "so _import_checkpointer's stub-installation branch (which mocks "
-    "areal.utils.stats_tracker.scalar) is skipped. Tracked in a follow-up issue."
-)
 def test_sync_save_emits_no_async_metrics(patched_checkpointer, tmp_path):
     """Sync save path stays metric-free; trainer-side `timeperf/save` is sufficient."""
     mod, manager, _ = patched_checkpointer
