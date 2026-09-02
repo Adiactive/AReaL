@@ -19,7 +19,9 @@ import sys
 import pytest
 
 try:
-    import mindspeed.megatron_adaptor  # noqa: F401 isort: skip  # must precede mbridge on NPU
+    from areal.utils.torch_npu_compat import import_mindspeed_adaptor
+
+    import_mindspeed_adaptor()
 except ImportError:
     pass
 

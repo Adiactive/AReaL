@@ -12,7 +12,9 @@ in. Run this file in its own pytest process::
 
 try:
     # Must precede every areal.engine import; absent on non-NPU platforms.
-    import mindspeed.megatron_adaptor  # noqa: F401  # isort: skip
+    from areal.utils.torch_npu_compat import import_mindspeed_adaptor
+
+    import_mindspeed_adaptor()
 except ImportError:
     pass
 
