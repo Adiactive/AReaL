@@ -20,14 +20,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import areal.engine.megatron_utils.ascend_log_patches  # noqa: F401 isort: skip  # before MindSpeed
-import areal.utils.torch_npu_compat  # noqa: F401 isort: skip  # before MindSpeed
+from areal.utils.torch_npu_compat import import_mindspeed_adaptor  # isort: skip
 import areal.engine.megatron_utils.triton_l2norm_patch  # noqa: F401 isort: skip  # before MindSpeed: fast GDN l2norm
 from areal.engine.megatron_utils.mindspeed_args_patch import (
     ensure_mindspeed_args_sanitized,
 )  # isort: skip
 
 ensure_mindspeed_args_sanitized()
-import mindspeed.megatron_adaptor  # noqa: F401 isort: skip
+import_mindspeed_adaptor()
 
 # Install the Transformer Engine import shim before the first ``import mbridge``.
 import areal.utils.mbridge_compat  # noqa: F401, I001  # isort: skip

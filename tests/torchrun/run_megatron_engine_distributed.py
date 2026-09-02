@@ -6,8 +6,9 @@ from functools import cache
 from typing import Any
 
 try:
-    import areal.utils.torch_npu_compat  # noqa: F401  isort: skip  # before MindSpeed
-    import mindspeed.megatron_adaptor  # noqa: F401  isort: skip  # before megatron.core
+    from areal.utils.torch_npu_compat import import_mindspeed_adaptor
+
+    import_mindspeed_adaptor()
 except ImportError:
     pass
 

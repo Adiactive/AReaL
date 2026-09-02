@@ -7,7 +7,11 @@ this BEFORE ``mindspeed.megatron_adaptor`` so the shims are in place before
 MindSpeed re-binds the affected symbols.
 """
 
+import importlib
 import os
+import signal
+import threading
+from types import ModuleType
 
 GROUPED_P2P_ENV = "AREAL_NPU_GROUPED_P2P"
 
@@ -28,6 +32,27 @@ GROUPED_P2P_ENV = "AREAL_NPU_GROUPED_P2P"
 # The pinned 2.10.0.post4 wheel (git 5dd8ef3f) still contains this code.
 GROUPED_P2P_BROKEN_SINCE = "2.10.0.post2"
 GROUPED_P2P_FIXED_IN = None  # set once a wheel carrying the fix is validated
+
+
+def import_mindspeed_adaptor() -> ModuleType:
+    """Import MindSpeed without retaining TorchAir's process signal handlers.
+
+    MindSpeed 0.18 eagerly imports TorchAir, whose import-time handlers consume
+    SIGINT and SIGTERM instead of terminating the process. Preserve whatever
+    handlers the application installed before the adaptor import so Ctrl-C and
+    scheduler termination retain their original semantics.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return importlib.import_module("mindspeed.megatron_adaptor")
+
+    original_handlers = {
+        signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        return importlib.import_module("mindspeed.megatron_adaptor")
+    finally:
+        for signum, handler in original_handlers.items():
+            signal.signal(signum, handler)
 
 
 def grouped_p2p_broken(torch_npu_version: str) -> bool:

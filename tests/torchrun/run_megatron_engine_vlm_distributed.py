@@ -20,7 +20,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import mindspeed.megatron_adaptor  # noqa: F401  # must precede mbridge on NPU
+    from areal.utils.torch_npu_compat import import_mindspeed_adaptor
+
+    import_mindspeed_adaptor()
 except ImportError:
     pass
 
