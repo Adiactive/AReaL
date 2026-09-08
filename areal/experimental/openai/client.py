@@ -59,6 +59,7 @@ from areal.api.cli_args import GenerationHyperparameters
 from areal.experimental.openai.cache import InteractionCache
 from areal.experimental.openai.tool_call_parser import process_tool_calls
 from areal.experimental.openai.types import InteractionWithTokenLogpReward
+from areal.infra.processor_cache import ProcessorCallCache
 from areal.utils import logging
 from areal.utils.hf_utils import (
     apply_chat_template,
@@ -178,6 +179,54 @@ class _VisionPrompt:
     mm_token_type_ids: list[int] | None
     multi_modal_input: list[dict[str, Any]]
     collapsed_input_ids: list[int]
+
+    def copy_for_consumer(self) -> "_VisionPrompt":
+        """Copy mutable containers while sharing processor-produced tensors."""
+        return _VisionPrompt(
+            input_ids=list(self.input_ids),
+            mm_token_type_ids=(
+                list(self.mm_token_type_ids)
+                if self.mm_token_type_ids is not None
+                else None
+            ),
+            multi_modal_input=[dict(item) for item in self.multi_modal_input],
+            collapsed_input_ids=list(self.collapsed_input_ids),
+        )
+
+
+async def _acached_vision_prompt(
+    processor_cache: ProcessorCallCache | None,
+    process: Callable[..., _VisionPrompt],
+    *args: Any,
+    **kwargs: Any,
+) -> _VisionPrompt:
+    """Reuse identical prompts, including the actual parent tokens in concat mode."""
+    if processor_cache is None:
+        return await asyncio.to_thread(process, *args, **kwargs)
+
+    def cache_argument(value: Any) -> Any:
+        if isinstance(value, InteractionWithTokenLogpReward):
+            response = value.model_response
+            return (
+                value.messages,
+                value.output_message_list,
+                value.collapsed_input_ids,
+                value.mm_token_type_ids,
+                response.input_tokens if response is not None else None,
+                response.output_tokens_without_stop if response is not None else None,
+            )
+        return value
+
+    cache_key = processor_cache.make_key(
+        "openai_vision",
+        process,
+        [cache_argument(value) for value in args],
+        {key: cache_argument(value) for key, value in kwargs.items()},
+    )
+    cached_prompt = await processor_cache.aget_or_compute(
+        cache_key, lambda: process(*args, **kwargs)
+    )
+    return cached_prompt.copy_for_consumer()
 
 
 def _require_processor(processor: Any) -> None:
@@ -903,6 +952,7 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
         top_p: float | None | NotGiven = NOT_GIVEN,
         extra_body: Body | None = None,
         areal_cache: InteractionCache | None = None,
+        processor_cache: ProcessorCallCache | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[ChatCompletionChunk, None]: ...
 
@@ -926,6 +976,7 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
         top_p: float | None | NotGiven = NOT_GIVEN,
         extra_body: Body | None = None,
         areal_cache: InteractionCache | None = None,
+        processor_cache: ProcessorCallCache | None = None,
         **kwargs: Any,
     ) -> ChatCompletion: ...
 
@@ -948,6 +999,7 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
         top_p: float | None | NotGiven = NOT_GIVEN,
         extra_body: Body | None = None,
         areal_cache: InteractionCache | None = None,
+        processor_cache: ProcessorCallCache | None = None,
         **kwargs: Any,
     ) -> ChatCompletion | AsyncGenerator[ChatCompletionChunk, None]:
         """Override create method to use AReaL engine and cache responses."""
@@ -1013,7 +1065,8 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
             _require_processor(self.processor)
         if self.chat_template_type == "hf":
             if has_images:
-                vision_prompt = await asyncio.to_thread(
+                vision_prompt = await _acached_vision_prompt(
+                    processor_cache,
                     _process_vision_prompt,
                     self.processor,
                     apply_chat_template(
@@ -1043,7 +1096,8 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
                 else messages_list
             )
             if has_images:
-                vision_prompt = await asyncio.to_thread(
+                vision_prompt = await _acached_vision_prompt(
+                    processor_cache,
                     concat_vision_prompt_with_parent,
                     concat_messages,
                     interaction.parent if interaction is not None else None,
@@ -1417,6 +1471,7 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
         frequency_penalty: float | None | NotGiven = NOT_GIVEN,
         extra_body: Body | None = None,
         areal_cache: dict[str, InteractionWithTokenLogpReward] | None = None,
+        processor_cache: ProcessorCallCache | None = None,
         **kwargs: Any,
     ) -> Response:
         """Override create method to use AReaL engine"""
@@ -1493,7 +1548,8 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
             _require_processor(self.processor)
         if self.chat_template_type == "hf":
             if has_images:
-                vision_prompt = await asyncio.to_thread(
+                vision_prompt = await _acached_vision_prompt(
+                    processor_cache,
                     _process_vision_prompt,
                     self.processor,
                     apply_chat_template(
@@ -1519,7 +1575,8 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
         elif self.chat_template_type == "concat":
             remaining = interaction.remaining_messages
             if has_images:
-                vision_prompt = await asyncio.to_thread(
+                vision_prompt = await _acached_vision_prompt(
+                    processor_cache,
                     concat_vision_prompt_with_parent,
                     remaining,
                     interaction.parent if interaction is not None else None,

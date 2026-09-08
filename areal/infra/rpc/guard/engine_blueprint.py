@@ -595,7 +595,15 @@ def call_engine_method():
         is_init = is_train and engine.initialized
         if not is_train or not is_init or engine.is_data_parallel_head():
             state = get_state()
-            result = RTensor.remotize(result, node_addr=state.node_addr)
+            # wait_for_task is the v1 rollout boundary that returns the grouped
+            # trajectory. Preserve its shared image tensors as RTensor shards;
+            # unrelated engine results keep the existing behavior.
+            preserve_output_tensor_aliases = method_name == "wait_for_task"
+            result = RTensor.remotize(
+                result,
+                node_addr=state.node_addr,
+                preserve_tensor_aliases=preserve_output_tensor_aliases,
+            )
             serialized_result = serialize_value(result)
         else:
             # Non-DP-head: result is discarded by controller. Skip remotize

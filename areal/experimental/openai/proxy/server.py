@@ -13,6 +13,9 @@ from areal.experimental.openai.cache import InteractionCache
 
 if TYPE_CHECKING:
     from areal.experimental.openai.types import InteractionWithTokenLogpReward
+    from areal.infra.processor_cache import ProcessorCallCache
+
+    from .tensor_reference import GroupTensorStore
 
 # Session timeout for cleanup (1 hour)
 SESSION_TIMEOUT_SECONDS = 3600
@@ -28,6 +31,8 @@ class StartSessionRequest(BaseModel):
 
     task_id: str
     api_key: str | None = None  # Reuse a previously-issued key (refresh)
+    processor_cache_group_id: str | None = None
+    processor_cache_group_size: int = 1
 
 
 class StartSessionResponse(BaseModel):
@@ -35,6 +40,25 @@ class StartSessionResponse(BaseModel):
 
     session_id: str
     api_key: str
+
+
+class ProcessorCacheGroupRequest(BaseModel):
+    """Request to discard one completed or aborted processor-cache group."""
+
+    group_id: str
+
+
+class FetchSharedTensorsRequest(BaseModel):
+    """Request unique multimodal tensors referenced by grouped trajectories."""
+
+    group_id: str
+    ref_ids: list[str]
+
+
+class FetchSharedTensorsResponse(BaseModel):
+    """Response containing tensors keyed by their group-scoped references."""
+
+    tensors: dict[str, Any]
 
 
 class SetRewardRequest(BaseModel):
@@ -50,12 +74,14 @@ class ExportTrajectoriesRequest(BaseModel):
     session_id: str
     discount: float = 1.0
     style: str = "individual"
+    supports_shared_tensor_references: bool = False
 
 
 class ExportTrajectoriesResponse(BaseModel):
     """Response containing serialized interactions."""
 
     interactions: dict[str, Any]
+    tensor_reference_group_id: str | None = None
 
 
 # =============================================================================
@@ -66,8 +92,15 @@ class ExportTrajectoriesResponse(BaseModel):
 class SessionData:
     """Data associated with a single RL session."""
 
-    def __init__(self, session_id: str):
+    def __init__(
+        self,
+        session_id: str,
+        processor_cache: ProcessorCallCache | None = None,
+        processor_cache_group_id: str | None = None,
+    ):
         self.session_id = session_id
+        self.processor_cache = processor_cache
+        self.processor_cache_group_id = processor_cache_group_id
 
         self._completed = False
         self._completions = InteractionCache()
@@ -76,11 +109,21 @@ class SessionData:
         self._last_access_time = time.time()
         self._end_time = None
         self._lock = threading.Lock()
+        self._processor_cache_released = False
 
     def update_last_access(self):
         """Update the last access time for this session."""
         with self._lock:
             self._last_access_time = time.time()
+
+    def take_processor_cache_group_id(self) -> str | None:
+        """Detach the cache and return its group ID once for idempotent release."""
+        with self._lock:
+            if self._processor_cache_released:
+                return None
+            self._processor_cache_released = True
+            self.processor_cache = None
+            return self.processor_cache_group_id
 
     def is_stale(self, timeout_seconds: float = SESSION_TIMEOUT_SECONDS) -> bool:
         """Check if this session has been inactive for too long."""
@@ -191,6 +234,7 @@ def _resolve_blob_refs(value: Any, blobs: dict[str, Any]) -> Any:
 
 def serialize_interactions(
     interactions: dict[str, InteractionWithTokenLogpReward],
+    tensor_store: GroupTensorStore | None = None,
 ) -> dict[str, Any]:
     """Serialize interactions into a json-compatible format for HTTP transport."""
     from areal.infra.rpc.serialization import serialize_value
@@ -209,8 +253,10 @@ def serialize_interactions(
                 "interaction_id": interaction.interaction_id,
             }
             if multi_modal_input is not None:
-                entry["multi_modal_input"] = _dedup_multi_modal(
-                    multi_modal_input, blobs
+                entry["multi_modal_input"] = (
+                    multi_modal_input
+                    if tensor_store is not None
+                    else _dedup_multi_modal(multi_modal_input, blobs)
                 )
             result[key] = entry
         else:
@@ -220,6 +266,8 @@ def serialize_interactions(
                 "reward": interaction.reward,
                 "interaction_id": interaction.interaction_id,
             }
+    if tensor_store is not None:
+        result = tensor_store.encode_multimodal_tensors(result)
     return serialize_value(
         {"__format__": _MM_BLOB_FORMAT, "interactions": result, "blobs": blobs}
     )
@@ -265,6 +313,8 @@ def deserialize_interactions(
 
 RL_START_SESSION_PATHNAME = "rl/start_session"
 RL_END_SESSION_PATHNAME = "rl/end_session"
+RL_END_PROCESSOR_CACHE_GROUP_PATHNAME = "rl/end_processor_cache_group"
+RL_FETCH_SHARED_TENSORS_PATHNAME = "rl/fetch_shared_tensors"
 RL_SET_REWARD_PATHNAME = "rl/set_reward"
 CHAT_COMPLETIONS_PATHNAME = "chat/completions"
 RESPONSES_PATHNAME = "responses"
