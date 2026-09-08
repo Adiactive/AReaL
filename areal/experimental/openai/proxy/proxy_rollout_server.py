@@ -33,6 +33,7 @@ from areal.experimental.openai.chat_template_patches import (
     apply_keep_all_reasoning_patches,
 )
 from areal.experimental.openai.client import ArealOpenAI
+from areal.infra.processor_cache import ProcessorCacheRegistry
 from areal.infra.rpc.serialization import deserialize_value, serialize_value
 from areal.infra.utils.http import validate_admin_api_key
 from areal.utils import name_resolve, names, seeding
@@ -48,17 +49,23 @@ from .server import (
     EXPORT_TRAJECTORIES_PATHNAME,
     GRANT_CAPACITY_PATHNAME,
     RESPONSES_PATHNAME,
+    RL_END_PROCESSOR_CACHE_GROUP_PATHNAME,
     RL_END_SESSION_PATHNAME,
+    RL_FETCH_SHARED_TENSORS_PATHNAME,
     RL_SET_REWARD_PATHNAME,
     RL_START_SESSION_PATHNAME,
     ExportTrajectoriesRequest,
     ExportTrajectoriesResponse,
+    FetchSharedTensorsRequest,
+    FetchSharedTensorsResponse,
+    ProcessorCacheGroupRequest,
     SessionData,
     SetRewardRequest,
     StartSessionRequest,
     StartSessionResponse,
     serialize_interactions,
 )
+from .tensor_reference import GroupTensorStoreRegistry
 
 if TYPE_CHECKING:
     from areal.api import InferenceEngine
@@ -105,6 +112,8 @@ _lock = threading.Lock()
 _capacity = 0
 _last_cleanup_time: float = 0
 _session_timeout_seconds: int = 3600  # Default timeout (overridden by config)
+_processor_cache_registry = ProcessorCacheRegistry()
+_group_tensor_store_registry = GroupTensorStoreRegistry()
 
 # API key authentication
 # Initialized to a random value so pre-configuration requests cannot bypass auth.
@@ -444,7 +453,14 @@ def _cleanup_stale_sessions():
 
     for session_id in stale_sessions:
         logger.warning(f"Removing stale session: {session_id}")
-        _session_cache.pop(session_id, None)
+        session_data = _session_cache.pop(session_id, None)
+        if session_data is not None:
+            cache_group_id = session_data.take_processor_cache_group_id()
+            if cache_group_id is not None:
+                _processor_cache_registry.release(cache_group_id)
+
+    _processor_cache_registry.discard_stale(_session_timeout_seconds)
+    _group_tensor_store_registry.discard_stale(_session_timeout_seconds)
 
     # Clean up API key mappings for stale sessions
     if stale_sessions:
@@ -473,6 +489,15 @@ def start_session(request: StartSessionRequest) -> StartSessionResponse:
     """
     global _capacity
     task_id = request.task_id
+
+    if (
+        request.processor_cache_group_id is not None
+        and request.processor_cache_group_size < 2
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="processor_cache_group_size must be at least 2 for grouped caching",
+        )
 
     with _lock:
         # Periodically cleanup stale sessions
@@ -517,8 +542,19 @@ def start_session(request: StartSessionRequest) -> StartSessionResponse:
             ):
                 session_api_key = secrets.token_urlsafe(32)
 
+        processor_cache = None
+        if request.processor_cache_group_id is not None:
+            processor_cache = _processor_cache_registry.acquire(
+                request.processor_cache_group_id,
+                request.processor_cache_group_size,
+            )
+
         _capacity -= 1
-        _session_cache[session_id] = SessionData(session_id=session_id)
+        _session_cache[session_id] = SessionData(
+            session_id=session_id,
+            processor_cache=processor_cache,
+            processor_cache_group_id=request.processor_cache_group_id,
+        )
         _api_key_to_session[session_api_key] = session_id
         _session_to_api_key[session_id] = session_api_key
 
@@ -543,7 +579,36 @@ def end_session(session_id: str = Depends(_require_session_key)):
 
     # finish() outside lock to avoid holding lock during potential I/O
     session.finish()
+    cache_group_id = session.take_processor_cache_group_id()
+    if cache_group_id is not None:
+        _processor_cache_registry.release(cache_group_id)
     return {"message": "success", "interaction_count": interaction_count}
+
+
+@app.post(
+    f"/{RL_END_PROCESSOR_CACHE_GROUP_PATHNAME}",
+    dependencies=[Depends(_require_admin_key)],
+)
+def end_processor_cache_group(request: ProcessorCacheGroupRequest):
+    """Discard processor and shared-tensor state after a rollout group finishes."""
+    _processor_cache_registry.discard(request.group_id)
+    _group_tensor_store_registry.discard(request.group_id)
+    return {"message": "success"}
+
+
+@app.post(
+    f"/{RL_FETCH_SHARED_TENSORS_PATHNAME}",
+    dependencies=[Depends(_require_admin_key)],
+)
+def fetch_shared_tensors(
+    request: FetchSharedTensorsRequest,
+) -> FetchSharedTensorsResponse:
+    """Fetch each unique multimodal tensor once for a grouped rollout."""
+    try:
+        tensors = _group_tensor_store_registry.fetch(request.group_id, request.ref_ids)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FetchSharedTensorsResponse(tensors=serialize_value(tensors))
 
 
 @app.post(f"/{RL_SET_REWARD_PATHNAME}")
@@ -608,8 +673,12 @@ async def _call_client_create(
     session_data.update_last_access()
 
     sig = inspect.signature(create_fn)
+    supports_processor_cache = "processor_cache" in sig.parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in sig.parameters.values()
+    )
     areal_client_ignored_args = ["model"] + (extra_ignored_args or [])
-    areal_client_disallowed_args = ["areal_cache"]
+    areal_client_disallowed_args = ["areal_cache", "processor_cache"]
     areal_client_allowed_args = list(
         k
         for k in sig.parameters.keys()
@@ -660,7 +729,13 @@ async def _call_client_create(
         kwargs["stream"] = True
 
     try:
-        return await create_fn(areal_cache=session_data.completions, **kwargs)
+        client_kwargs: dict[str, Any] = {
+            "areal_cache": session_data.completions,
+            **kwargs,
+        }
+        if supports_processor_cache:
+            client_kwargs["processor_cache"] = session_data.processor_cache
+        return await create_fn(**client_kwargs)
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
@@ -966,9 +1041,23 @@ async def export_trajectories(
         _session_cache.pop(session_id, None)
         _remove_api_keys_for_session(session_id)
 
-    # Serialize for HTTP transport
-    serialized = serialize_interactions(interactions)
-    return ExportTrajectoriesResponse(interactions=serialized)
+    # Grouped inline/subproc sessions export only multimodal tensor references.
+    # The workflow fetches each unique tensor once through the group endpoint.
+    tensor_reference_group_id = (
+        session_data.processor_cache_group_id
+        if request.supports_shared_tensor_references
+        else None
+    )
+    tensor_store = (
+        _group_tensor_store_registry.get_or_create(tensor_reference_group_id)
+        if tensor_reference_group_id is not None
+        else None
+    )
+    serialized = serialize_interactions(interactions, tensor_store=tensor_store)
+    return ExportTrajectoriesResponse(
+        interactions=serialized,
+        tensor_reference_group_id=tensor_reference_group_id,
+    )
 
 
 # =============================================================================
