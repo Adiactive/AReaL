@@ -139,6 +139,25 @@ def make_hf_and_mcore_config(
         hf_config = getattr(bridge.hf_pretrained, "config", bridge.hf_pretrained)
         if hasattr(hf_config, "_name_or_path"):
             hf_config._name_or_path = hf_path
+        if is_npu_available and mpu.get_expert_model_parallel_world_size() > 1:
+            # MindSpeed validates overlap during config extraction. Set expert
+            # dimensions before finalizing; pipeline layout is configured later.
+            provider = bridge.to_megatron_provider(load_weights=False)
+            provider.expert_model_parallel_size = (
+                mpu.get_expert_model_parallel_world_size()
+            )
+            provider.expert_tensor_parallel_size = (
+                mpu.get_expert_tensor_parallel_world_size()
+            )
+            provider.finalize()
+            tf_config = TransformerConfig(
+                **{
+                    field.name: getattr(provider, field.name)
+                    for field in dataclasses.fields(TransformerConfig)
+                    if hasattr(provider, field.name)
+                }
+            )
+            return hf_config, tf_config
         return hf_config, bridge.transformer_config
     else:
         hf_config: PretrainedConfig = AutoConfig.from_pretrained(
@@ -335,6 +354,17 @@ def make_mcore_model(
         return models
 
     if bridge is not None and bridge_type == "megatron-bridge":
+        if is_npu_available and hf_config.model_type in (
+            "qwen3_vl",
+            "qwen3_vl_moe",
+            "qwen3_5",
+            "qwen3_5_moe",
+        ):
+            from areal.engine.megatron_utils.megatron_bridge_patches import (
+                patch_qwen3_vl_vision_config,
+            )
+
+            patch_qwen3_vl_vision_config()
         provider = bridge.to_megatron_provider(load_weights=False)
         provider.vision_dp_when_cp = mcore_config.vision_dp_when_cp
         if use_lora and hf_config.model_type == "qwen3_5":

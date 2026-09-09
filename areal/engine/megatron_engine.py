@@ -2729,7 +2729,7 @@ class MegatronEngine(TrainEngine):
                 parallel_strategy, "context_parallel_size", 1
             ),
             "expert_model_parallel_size": getattr(
-                parallel_strategy, "expert_model_parallel_size", 1
+                parallel_strategy, "expert_parallel_size", 1
             ),
             "tensor_model_parallel_size": getattr(
                 parallel_strategy, "tensor_parallel_size", 1
