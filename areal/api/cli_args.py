@@ -1814,20 +1814,17 @@ class vLLMConfig:
     cpu_offload_gb: float = 0
     disable_sliding_window: bool = True
     max_model_len: int | None = 32768
-    # NOTE: We use no_enable_* prefix (instead of enable_*) because get_py_cmd()
-    # ignores parameters with False values. Setting enable_chunked_prefill=False
-    # or enable_prefix_caching=False has NO effect - vLLM will use its default
-    # values (True). Using no_enable_*=True correctly passes --no-enable-* flags
-    # to vLLM, achieving enable_*=False behavior.
+    # get_py_cmd() skips False values, so use no_enable_chunked_prefill=True
+    # to pass --no-enable-chunked-prefill. False leaves the vLLM default.
     #
     # IMPORTANT: vLLM V1 engine forces enable_chunked_prefill=True by default
     # for non-pooling tasks (generation tasks). And no_enable_chunked_prefill=True
     # has NO effect for generation tasks in vLLM v0.11.0.
     #
     no_enable_chunked_prefill: bool = False
-    # NOTE: Disables prefix caching (vLLM default is enabled) because it will
-    # make RL training corrupted in single controller mode.
-    no_enable_prefix_caching: bool = True
+    # AReaL defaults to True (disable caching) to avoid stale caches in RL.
+    # False explicitly enables caching; None delegates to vLLM's model default.
+    no_enable_prefix_caching: bool | None = True
     gpu_memory_utilization: float = 0.9
     worker_extension_cls: str = (
         "areal.engine.vllm_ext.vllm_worker_extension.VLLMWorkerExtension"
@@ -1888,6 +1885,8 @@ class vLLMConfig:
         node_rank: int = 0,
     ):
         args: dict = conf_as_dict(vllm_config)
+        if vllm_config.no_enable_prefix_caching is not None:
+            args["enable_prefix_caching"] = not vllm_config.no_enable_prefix_caching
         args = dict(
             # Model and tokenizer
             tokenizer=vllm_config.model,
