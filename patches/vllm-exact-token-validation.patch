@@ -1,0 +1,101 @@
+AReaL-local extension to /inference/v1/generate for the pinned vLLM v0.26.0 source.
+
+Adds `expected_token_ids` and refuses to generate unless the fully preprocessed
+engine prompt equals it. Targets `entrypoints/scale_out/token_in_token_out`
+in vLLM v0.26.0.
+
+Applies on top of vllm-content-parts.patch. Keep it until upstream
+exposes an equivalent prompt assertion.
+
+diff --git a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
+--- a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
++++ b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
+@@ -99,6 +99,19 @@ class GenerateRequest(BaseModel):
+             raise ValueError("content_parts and features are mutually exclusive")
+         return self
+ 
++    expected_token_ids: list[int] | None = None
++    """AReaL extension: the exact prompt the caller records and trains on.
++
++    ``token_ids`` carries one unexpanded placeholder per media item, because
++    the multimodal renderer expands placeholders itself. This field carries the
++    caller's locally expanded prompt instead. The server refuses to generate
++    unless the fully preprocessed engine prompt equals it, so a processor
++    mismatch between caller and server surfaces as a failed request rather than
++    as silently divergent behavior and training prompts.
++
++    When omitted, no exact-token assertion is performed.
++    """
++
+     sampling_params: SamplingParams
+     """The sampling parameters for the model."""
+ 
+diff --git a/vllm/entrypoints/scale_out/token_in_token_out/serving.py b/vllm/entrypoints/scale_out/token_in_token_out/serving.py
+--- a/vllm/entrypoints/scale_out/token_in_token_out/serving.py
++++ b/vllm/entrypoints/scale_out/token_in_token_out/serving.py
+@@ -54,6 +54,40 @@ from .protocol import (
+ 
+ logger = init_logger(__name__)
+ 
++# Tokens of context shown on either side of an exact-token mismatch. Enough to
++# identify where the sequences part without echoing the prompt into logs.
++_MISMATCH_WINDOW = 8
++
++
++def _describe_prompt_mismatch(
++    expected: GenericSequence[int],
++    actual: GenericSequence[int],
++    request: GenerateRequest,
++    engine_input: EngineInput,
++) -> str:
++    """Locate an exact-token mismatch without echoing the whole prompt."""
++    shorter = min(len(expected), len(actual))
++    divergence = shorter
++    for i in range(shorter):
++        if expected[i] != actual[i]:
++            divergence = i
++            break
++
++    lo = max(0, divergence - _MISMATCH_WINDOW // 2)
++    hi = divergence + _MISMATCH_WINDOW
++    placeholders = engine_input.get("mm_placeholders") or {}
++    return (
++        "[areal-exact-token] Rendered prompt does not match "
++        "expected_token_ids. "
++        f"expected_len={len(expected)} actual_len={len(actual)} "
++        f"first_divergence={divergence} "
++        f"expected[{lo}:{hi}]={list(expected[lo:hi])} "
++        f"actual[{lo}:{hi}]={list(actual[lo:hi])} "
++        f"media_items={len(request.content_parts or ())} "
++        "placeholders="
++        f"{ {modality: len(v) for modality, v in placeholders.items()} }"
++    )
++
+ 
+ class ServingTokens(GenerateBaseServing):
+     """Provides Tokens IN <> Tokens OUT functionality to vLLM API."""
+@@ -199,6 +233,24 @@ class ServingTokens(GenerateBaseServing):
+             else await self._get_trace_headers(raw_request.headers)
+         )
+ 
++        if request.expected_token_ids is not None:
++            actual_prompt_ids = engine_input.get("prompt_token_ids")
++            if actual_prompt_ids is None:
++                return self.create_error_response(
++                    "[areal-exact-token] Cannot verify expected_token_ids: "
++                    "this request produced no prompt_token_ids, so the "
++                    "sequence the engine would run is unknown."
++                )
++            if list(actual_prompt_ids) != list(request.expected_token_ids):
++                return self.create_error_response(
++                    _describe_prompt_mismatch(
++                        request.expected_token_ids,
++                        actual_prompt_ids,
++                        request,
++                        engine_input,
++                    )
++                )
++
+         # Extract data_parallel_rank from header (router can inject it)
+         data_parallel_rank = self._get_data_parallel_rank(raw_request)
+ 

@@ -35,6 +35,25 @@
 
 ## 运行环境
 
+### 当前源码构建
+
+当前 `ascend` 分支的 `Dockerfile.a2` 和 `Dockerfile.a3` 使用下表中的依赖栈。请使用这些 Dockerfile
+重新构建镜像；下一节所述已发布的 `v1.0.5` 镜像不包含此次升级。
+
+| 组件                            | 版本                                                      |
+| ------------------------------- | --------------------------------------------------------- |
+| CANN / Python                   | 9.1.0 / 3.12                                              |
+| PyTorch / torch_npu             | 2.10.0 / 2.10.0.post4                                     |
+| vLLM                            | 0.26.0，包含 content-parts 和 exact-token-validation 补丁 |
+| vLLM-Ascend                     | `releases/v0.26.0rc` 的 `fb2820b9b659`                    |
+| Transformers                    | 5.14.1                                                    |
+| Megatron-Core / Megatron-Bridge | `dc0ee41ada17`（0.18）/ v0.5.1                            |
+
+Dockerfile 固定训练依赖的源码版本。Python 依赖范围在构建时解析，而非从 `uv.npu.lock` 安装。Transformers 5.14.1 要求
+safetensors >=0.8.0，因此检查点保存目录必须支持文件重命名。 此依赖栈不支持限制重命名操作的 SFS 目录。
+
+### 已发布的 v1.0.5 镜像
+
 我们建议使用 Docker 和我们提供的 NPU 镜像。A2 镜像面向 Atlas A2，A3 镜像面向 Atlas A3；两者基于相同的方法构建（参见
 `ascend-v1.0.5` 分支上的
 [`Dockerfile.a2`](https://github.com/areal-project/AReaL/blob/ascend-v1.0.5/Dockerfile.a2)

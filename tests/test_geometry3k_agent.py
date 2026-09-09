@@ -18,6 +18,21 @@ def _png_bytes() -> bytes:
         return buffer.getvalue()
 
 
+@pytest.mark.parametrize(
+    ("completion", "answer", "expected"),
+    [
+        (r"<think>Half.</think>\boxed{\frac{1}{2}}", "0.5", 1.0),
+        (r"<think>Wrong.</think>\boxed{3}", "2", 0.1),
+        (r"\boxed{2}", "2", 0.9),
+    ],
+)
+def test_geometry3k_reward_with_real_grader(completion, answer, expected):
+    """Exercise mathruler's actual LaTeX parser instead of mocking accuracy."""
+    reward = geometry3k_agent.geometry3k_reward_fn(completion, answer)
+
+    assert reward == pytest.approx(expected)
+
+
 def test_geometry3k_reward_combines_accuracy_and_format_scores(monkeypatch):
     """The agent workflow must preserve Geometry3K's 90/10 reward weighting."""
     monkeypatch.setattr(geometry3k_agent, "acc_reward", lambda *_: 0.5)

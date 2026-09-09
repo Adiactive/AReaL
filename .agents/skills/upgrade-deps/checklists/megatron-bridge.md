@@ -8,6 +8,7 @@ upstream_paths:
   - megatron/bridge/peft/lora.py
   - megatron/bridge/models/gpt_provider.py
   - megatron/bridge/models/qwen_vl/qwen35_vl_provider.py
+  - megatron/bridge/models/qwen3_asr/hf_qwen3_asr/__init__.py
 ---
 
 ## Affected Files
@@ -266,6 +267,21 @@ from megatron.bridge.models.gpt_provider import (
 **Check:** Confirm both spec callables remain available and provider instances continue
 to store the selected callable in `transformer_layer_spec`; AReaL compares by identity
 before substituting NPU-compatible LoRA specifications.
+
+______________________________________________________________________
+
+### 12. Qwen3-ASR Auto-class registration
+
+**Source:** `megatron/bridge/models/qwen3_asr/hf_qwen3_asr/__init__.py`
+
+Imported transitively by `megatron.bridge.AutoBridge` during
+`MegatronEngine._build_hf_mcore_bridge()`.
+
+**Check:** When Transformers already contains `Qwen3ASRConfig.model_type` in
+`CONFIG_MAPPING`, Bridge must skip its vendored `AutoConfig`, `AutoModel`, and
+`AutoProcessor` registrations. Unconditional registration fails at import on
+Transformers 5.14; `exist_ok=True` alone is insufficient because it replaces the native
+mapping rather than retaining it.
 
 ______________________________________________________________________
 

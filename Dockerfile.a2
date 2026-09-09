@@ -28,9 +28,9 @@ ARG TRANSFORMER_ENGINE_NPU_BRANCH=main
 ARG TRANSFORMER_ENGINE_NPU_COMMIT=f0bff4a6a5d6483cc1af839c6b198eeba124543a
 ARG MEGATRON_BRIDGE_TAG=v0.5.1
 ARG MEGATRON_BRIDGE_COMMIT=5cb3444c43f7499cf3872b2d46870cf8bc2e00ce
-ARG VLLM_TAG=v0.23.0
-ARG VLLM_ASCEND_BRANCH=releases/v0.23.0
-ARG VLLM_ASCEND_COMMIT=84f60b825aa83b78b9a0b46047c5fefc2876c211
+ARG VLLM_TAG=v0.26.0
+ARG VLLM_ASCEND_BRANCH=releases/v0.26.0rc
+ARG VLLM_ASCEND_COMMIT=fb2820b9b6598f888d7dc56260c03d3352cc08e9
 ARG ASCEND_INSTALL_PATH=/usr/local/Ascend
 ARG SOC_VERSION=ascend910b1
 
@@ -41,23 +41,19 @@ RUN apt-get update -y && \
     update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 20 && \
     update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-15 20 && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    python3 -m pip install -U pip "setuptools==79.0.1" uv && \
+    python3 -m pip install -U pip "setuptools>=80,<81" uv && \
     python3 -m pip cache purge
 
-# Sleep/wake bugfixes plus exact-token generation transport for the pinned vLLM /
-# vllm-ascend releases above; see patches/README.md for provenance and per-patch
-# deletion conditions. Bump alongside VLLM_TAG / VLLM_ASCEND_BRANCH.
-COPY patches/vllm.v0.23.0.patch \
-     patches/vllm.v0.23.0-content-parts.patch \
-     patches/vllm.v0.23.0-exact-token-validation.patch \
-     patches/vllm-ascend.v0.23.0.patch /areal-workspace/patches/
+# Exact-token generation transport for the pinned vLLM release; see
+# patches/README.md for provenance and deletion conditions.
+COPY patches/vllm-content-parts.patch \
+     patches/vllm-exact-token-validation.patch /areal-workspace/patches/
 
 # Install vLLM + vllm-ascend. The latter pins torch 2.10.0,
 # torch-npu 2.10.0.post4, and triton-ascend 3.2.2.
-# Patches are applied after each editable install, never before: a dirty tree makes
-# setuptools-scm report 0.23.1.dev0 instead of 0.23.0, which flips vllm-ascend's
-# vllm_version_is("0.23.0") gates onto their 0.24+ paths. The recorded version is
-# asserted so any regression fails the build, not the first rollout of a training run.
+# Patches are applied after the editable install, never before: a dirty tree changes
+# setuptools-scm's recorded version and can select incompatible vllm-ascend paths.
+# The recorded version is asserted so any regression fails during the build.
 RUN export PIP_EXTRA_INDEX_URL="https://mirrors.huaweicloud.com/ascend/repos/pypi https://download.pytorch.org/whl/cpu https://triton-ascend.osinfra.cn/pypi/simple/" && \
     export PIP_TRUSTED_HOST="mirrors.huaweicloud.com triton-ascend.osinfra.cn download.pytorch.org download-r2.pytorch.org" && \
     export SOC_VERSION=${SOC_VERSION} && \
@@ -69,15 +65,13 @@ RUN export PIP_EXTRA_INDEX_URL="https://mirrors.huaweicloud.com/ascend/repos/pyp
     git -C /areal-workspace/vllm-ascend checkout ${VLLM_ASCEND_COMMIT} && \
     cd /areal-workspace/vllm && \
     VLLM_TARGET_DEVICE=empty pip install -v -e . && \
-    git apply -v /areal-workspace/patches/vllm.v0.23.0.patch && \
-    git apply -v /areal-workspace/patches/vllm.v0.23.0-content-parts.patch && \
-    git apply -v /areal-workspace/patches/vllm.v0.23.0-exact-token-validation.patch && \
+    git apply -v /areal-workspace/patches/vllm-content-parts.patch && \
+    git apply -v /areal-workspace/patches/vllm-exact-token-validation.patch && \
     python3 -c "import sys, os; sys.path.insert(0, 'vllm'); import _version; want = os.environ['VLLM_TAG'].removeprefix('v'); assert _version.__version__ == want, f'vllm reports {_version.__version__}, expected {want}'" && \
     pip uninstall -y triton && \
     cd /areal-workspace/vllm-ascend && \
     pip install -r requirements.txt && \
     COMPILE_CUSTOM_KERNELS=1 pip install --no-build-isolation --no-deps -v -e . && \
-    git apply -v /areal-workspace/patches/vllm-ascend.v0.23.0.patch && \
     python3 -c "from importlib.metadata import version; from packaging.version import Version; expected = {'torch': '2.10.0', 'torch-npu': '2.10.0.post4', 'triton-ascend': '3.2.2'}; actual = {name: Version(version(name)).public for name in expected}; assert actual == expected, (actual, expected)" && \
     python3 -m pip cache purge
 
@@ -95,16 +89,20 @@ RUN git clone --branch ${MEGATRON_BRANCH} https://github.com/NVIDIA/Megatron-LM.
     python3 -m pip install -e /areal-workspace/MindSpeed --no-deps && \
     python3 -m pip cache purge
 
-# Install AReaL deps without re-resolving vllm-ascend's torch stack. Megatron-Bridge
-# 0.5.1 requires Transformers 5.8.x; the NPU manifest stays on vLLM's 5.5.4.
+# Supply dependencies skipped by source-only/--no-deps training installs:
+# qwen-vl-utils/modelopt for Bridge, nvdlfw-inspect for TENPU, tzdata for MindSpeed.
+# Restore vLLM 0.26's FastAPI/Starlette requirements after vllm-ascend downgrades them;
+# OpenAI >=2.44 is the validated SDK baseline for its Responses API imports.
+# Keep this separate so dependency adjustments reuse the backend build layers.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_HTTP_TIMEOUT=300 uv pip install --system \
+        qwen-vl-utils nvidia-modelopt nvdlfw-inspect tzdata \
+        'fastapi>=0.133.0,<0.137' 'starlette>=1.0.1' 'openai>=2.44.0'
+
+# Install only AReaL application dependencies from the manifest.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.npu.toml,target=pyproject.toml \
-    UV_HTTP_TIMEOUT=300 uv pip install -r pyproject.toml --system --group dev && \
-    python3 -m pip install --no-cache-dir --no-deps \
-        "transformers==5.8.1" \
-        "nvidia-modelopt==0.44.0" \
-        "nvdlfw-inspect==0.2.2" \
-        "setuptools==79.0.1"
+    UV_HTTP_TIMEOUT=300 uv pip install -r pyproject.toml --system --group dev
 
 # Install Megatron-Bridge
 COPY patches/megatron-bridge.v0.5.1-vision-dp-cp.patch /areal-workspace/patches/
@@ -122,7 +120,9 @@ RUN cp /AReaL/pyproject.npu.toml /AReaL/pyproject.toml && \
 ENV PYTHONPATH=/areal-workspace/MegatronAdaptor:/areal-workspace/TransformerEngineNPU:/areal-workspace/MindSpeed:/areal-workspace/Megatron-LM:/areal-workspace/Megatron-Bridge/src:$PYTHONPATH
 
 # Full imports require libascend_hal.so from the host driver mount at runtime.
-RUN python3 -c "from importlib.metadata import version; from packaging.version import Version; expected = {'torch': '2.10.0', 'torch-npu': '2.10.0.post4', 'triton-ascend': '3.2.2', 'transformers': '5.8.1', 'nvidia-modelopt': '0.44.0', 'nvdlfw-inspect': '0.2.2', 'setuptools': '79.0.1'}; actual = {name: Version(version(name)).public for name in expected}; assert actual == expected, (actual, expected)" && \
+RUN python3 -c "from importlib.metadata import version; from packaging.version import Version; expected = {'torch': '2.10.0', 'torch-npu': '2.10.0.post4', 'triton-ascend': '3.2.2', 'transformers': '5.14.1'}; actual = {name: Version(version(name)).public for name in expected}; assert actual == expected, (actual, expected)" && \
+    python3 -c "import tomllib; from importlib.metadata import version; from packaging.requirements import Requirement; deps = tomllib.load(open('/AReaL/pyproject.toml', 'rb'))['project']['dependencies']; requirements = [Requirement(dep) for dep in deps]; mismatches = [(r.name, version(r.name), str(r.specifier)) for r in requirements if (r.marker is None or r.marker.evaluate()) and r.specifier and not r.specifier.contains(version(r.name))]; assert not mismatches, mismatches" && \
+    python3 -c "from importlib.metadata import version; from packaging.requirements import Requirement; requirements = [Requirement(dep) for dep in ('fastapi>=0.133.0,<0.137', 'starlette>=1.0.1', 'openai>=2.44.0')]; mismatches = [(r.name, version(r.name), str(r.specifier)) for r in requirements if not r.specifier.contains(version(r.name))]; assert not mismatches, mismatches" && \
     python3 -c "from importlib.util import find_spec; modules = ('megatron_adaptor', 'transformer_engine', 'mindspeed', 'mbridge', 'megatron'); missing = [name for name in modules if find_spec(name) is None]; assert not missing, missing"
 
 ENV HCCL_IF_BASE_PORT=63000 \

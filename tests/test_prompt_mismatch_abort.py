@@ -24,6 +24,8 @@ from areal.infra.workflow_executor import (
 from areal.utils import logging
 from areal.utils.vision_canary import EXACT_TOKEN_REFUSAL, is_exact_token_refusal
 
+EXACT_TOKEN_PATCH = Path("patches/vllm-exact-token-validation.patch")
+
 
 def _rejection() -> aiohttp.ClientResponseError:
     """The error aiohttp raises when the server refuses an inexact prompt."""
@@ -70,7 +72,7 @@ def test_every_refusal_the_patch_emits_carries_the_marker():
     The predicate matches the marker alone, so a branch added without it would
     silently stop aborting.
     """
-    patch = Path("patches/vllm.v0.23.0-exact-token-validation.patch").read_text()
+    patch = EXACT_TOKEN_PATCH.read_text()
     refusals = [
         line
         for line in patch.splitlines()
@@ -127,7 +129,7 @@ def test_marker_matches_what_the_patch_emits():
     The two live in different repos, so drift would make every refusal read as
     an unrelated failure and silently disable the abort.
     """
-    patch = Path("patches/vllm.v0.23.0-exact-token-validation.patch").read_text()
+    patch = EXACT_TOKEN_PATCH.read_text()
     assert EXACT_TOKEN_REFUSAL in patch
 
 

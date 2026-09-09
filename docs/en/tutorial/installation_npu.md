@@ -39,6 +39,28 @@ vLLM-Ascend community at
 
 ## Runtime Environment
 
+### Current source builds
+
+The current `ascend` branch's `Dockerfile.a2` and `Dockerfile.a3` target the stack
+below. Rebuild from these Dockerfiles to use it; the published `v1.0.5` images in the
+next section do not contain this upgrade.
+
+| Component                       | Version                                                      |
+| ------------------------------- | ------------------------------------------------------------ |
+| CANN / Python                   | 9.1.0 / 3.12                                                 |
+| PyTorch / torch_npu             | 2.10.0 / 2.10.0.post4                                        |
+| vLLM                            | 0.26.0 with content-parts and exact-token-validation patches |
+| vLLM-Ascend                     | `releases/v0.26.0rc` at `fb2820b9b659`                       |
+| Transformers                    | 5.14.1                                                       |
+| Megatron-Core / Megatron-Bridge | `dc0ee41ada17` (0.18) / v0.5.1                               |
+
+The Dockerfiles pin the training-stack source revisions. Python dependency ranges are
+resolved during the build, not installed from `uv.npu.lock`. Transformers 5.14.1
+requires safetensors >=0.8.0; checkpoint destinations must support file rename.
+Rename-restricted SFS destinations are not supported by this stack.
+
+### Published v1.0.5 images
+
 We recommend using Docker with our provided image for NPU. The A2 image targets Atlas A2
 and the A3 image targets Atlas A3; both are built from the same recipe (see
 [`Dockerfile.a2`](https://github.com/areal-project/AReaL/blob/ascend-v1.0.5/Dockerfile.a2)

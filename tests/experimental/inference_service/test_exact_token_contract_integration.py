@@ -7,9 +7,6 @@ launches, but only with a synthetic prompt. This exercises the same contract
 end-to-end against a real model and real media, including the case the canary
 cannot construct: that sending the *expanded* prompt is itself refused.
 
-Run manually. There is no CI job serving a vLLM 0.23 carrying these patches --
-the standard vLLM environment pins 0.19.1 -- so marking it must-run would only
-fail it against a server that never had the validation installed.
 """
 
 from __future__ import annotations

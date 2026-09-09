@@ -34,10 +34,10 @@ def undo_moe_postprocess_for_reload(model):
         return
 
     for name, p in model.named_parameters():
-        if "mlp.experts.w13_weight" in name:
-            p.data = p.data.transpose(1, 2).contiguous()
-
-        elif "mlp.experts.w2_weight" in name:
+        # vLLM 0.26 stores the expert parameters on the runner's child module.
+        if name.endswith(
+            (".experts.routed_experts.w13_weight", ".experts.routed_experts.w2_weight")
+        ):
             p.data = p.data.transpose(1, 2).contiguous()
 
 

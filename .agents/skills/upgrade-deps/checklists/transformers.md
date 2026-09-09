@@ -15,6 +15,8 @@ upstream_paths:
   - src/transformers/models/qwen2_vl/modeling_qwen2_vl.py
   - src/transformers/models/qwen2_5_vl/
   - src/transformers/models/qwen3_vl/modeling_qwen3_vl.py
+  - src/transformers/models/qwen3_5/modeling_qwen3_5.py
+  - src/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py
   - src/transformers/utils/import_utils.py
 ---
 
@@ -35,6 +37,7 @@ upstream_paths:
 | File                                                                       | Imports / Usage                                                                                                                                                                                                                                                    |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `areal/models/transformers/ulyssess_patch.py`                              | `transformers.modeling_flash_attention_utils._flash_attention_forward` (direct import); `transformers.integrations.flash_attention._flash_attention_forward` (monkey-patch); dynamic import of `transformers.models.{qwen2_vl,qwen2_5_vl,qwen3_vl}` module strings |
+| `areal/models/transformers/ulyssess_patch.py` (Qwen3.5 path)               | dynamically patches `Qwen3_5Model`/`Qwen3_5TextModel` and MoE counterparts for input slicing                                                                                                                                                                       |
 | `areal/models/transformers/qwen3_vl.py`                                    | `transformers.integrations.flash_attention.flash_attention_forward`; `transformers.models.qwen3_vl.modeling_qwen3_vl.{apply_rotary_pos_emb, repeat_kv}`                                                                                                            |
 | `areal/models/transformers/qwen2_vl.py`                                    | `transformers.integrations.flash_attention.flash_attention_forward`; `transformers.models.qwen2_vl.modeling_qwen2_vl.{apply_multimodal_rotary_pos_emb, repeat_kv}`                                                                                                 |
 | `areal/models/transformers/vision_sp_shard.py`                             | monkey-patches Qwen VL vision modules (internal submodule access)                                                                                                                                                                                                  |
@@ -427,6 +430,27 @@ is_npu_available = is_torch_npu_available()
 **Check:** Confirm the function is still at this exact submodule path (private utils
 module). Check whether it was moved to a different location or replaced with a different
 NPU detection mechanism.
+
+______________________________________________________________________
+
+### 13. Qwen3.5 dense and MoE model internals (HIGH RISK — monkey-patched)
+
+**Source:** `src/transformers/models/qwen3_5/modeling_qwen3_5.py`,
+`src/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py`
+
+Accessed dynamically in `areal/models/transformers/ulyssess_patch.py`:
+
+```python
+Qwen3_5Model.forward = _qwen3_5_base_forward
+Qwen3_5MoeModel.forward = _qwen3_5_base_forward
+patch_vlm_for_ulysses_input_slicing(Qwen3_5TextModel)
+patch_vlm_for_ulysses_input_slicing(Qwen3_5MoeTextModel)
+```
+
+**Check:** Confirm all four class names and module paths still exist. Verify the outer
+models still expose `visual`, `language_model`, `get_input_embeddings()`, and
+image/video token IDs, and the text-model forwards still accept `inputs_embeds`,
+`position_ids`, and `attention_mask` keyword arguments.
 
 ______________________________________________________________________
 

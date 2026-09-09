@@ -1,33 +1,19 @@
-Backport of vllm-project/vllm#51478 onto vLLM v0.23.0.
+Backport of vllm-project/vllm#51478 onto the pinned vLLM v0.26.0 source.
 
     [Frontend] Support raw multimodal content in /inference/v1/generate
     https://github.com/vllm-project/vllm/pull/51478
-    Merged upstream 2026-08-11, after the v0.23.0 tag.
+    Merged upstream 2026-08-11, after the v0.26.0 tag.
 
 Adds `content_parts` so one request can carry caller-supplied token ids together
-with raw images/audio/video. Without it the only multimodal route that accepts an
-authoritative prompt is /render -> /generate, which returns placeholder offsets
-relative to a separately rendered sequence and forces the caller to remap them.
-
-Python frontend only. AReaL launches vLLM through
-areal.engine.vllm_ext.areal_vllm_server, which imports Python vLLM's run_server and
-monkey-patches its Python build_app, so the Rust frontend is not on this path. A
-Rust-fronted or externally managed server must carry #51478's Rust half instead;
-AReaL's startup canary rejects an unpatched frontend rather than assuming it works.
-
-Adapted rather than cherry-picked: upstream has since moved these modules under
-scale_out/token_in_token_out, and v0.23.0 reaches the renderer through
-self.openai_serving_render.renderer rather than self.online_renderer.renderer.
-The unsupported-part-type branch is an addition, so an unrecognised type fails
-loudly instead of being dropped from the prompt.
+with raw images/audio/video. Targets `entrypoints/scale_out/token_in_token_out`
+in vLLM v0.26.0.
 
 Delete this patch when the pinned vLLM release contains #51478.
 
-diff --git a/vllm/entrypoints/serve/disagg/protocol.py b/vllm/entrypoints/serve/disagg/protocol.py
-index 60d2a64..a01977c 100644
---- a/vllm/entrypoints/serve/disagg/protocol.py
-+++ b/vllm/entrypoints/serve/disagg/protocol.py
-@@ -81,6 +81,16 @@ class GenerateRequest(BaseModel):
+diff --git a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
+--- a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
++++ b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
+@@ -100,6 +100,16 @@ class GenerateRequest(BaseModel):
      features: MultiModalFeatures | None = None
      """Multimodal hashes and placeholder positions (populated for MM inputs)."""
  
@@ -44,20 +30,20 @@ index 60d2a64..a01977c 100644
      sampling_params: SamplingParams
      """The sampling parameters for the model."""
  
-diff --git a/vllm/entrypoints/serve/disagg/serving.py b/vllm/entrypoints/serve/disagg/serving.py
-index 72aeb84..fbe0c7d 100644
---- a/vllm/entrypoints/serve/disagg/serving.py
-+++ b/vllm/entrypoints/serve/disagg/serving.py
-@@ -14,6 +14,7 @@ import pybase64 as base64
+diff --git a/vllm/entrypoints/scale_out/token_in_token_out/serving.py b/vllm/entrypoints/scale_out/token_in_token_out/serving.py
+--- a/vllm/entrypoints/scale_out/token_in_token_out/serving.py
++++ b/vllm/entrypoints/scale_out/token_in_token_out/serving.py
+@@ -13,7 +13,8 @@ import numpy as np
+ import pybase64 as base64
  from fastapi import Request
  
  from vllm.engine.protocol import EngineClient
 +from vllm.entrypoints.chat_utils import AsyncMultiModalItemTracker
- from vllm.entrypoints.openai.chat_completion.protocol import (
-     ChatCompletionLogProb,
-     ChatCompletionLogProbs,
-@@ -39,7 +40,7 @@ from vllm.entrypoints.serve.disagg.protocol import (
- from vllm.entrypoints.serve.render.serving import OpenAIServingRender
+ from vllm.entrypoints.generate.base.serving import (
+     GenerateBaseServing,
+     clamp_prompt_logprobs,
+@@ -33,7 +34,7 @@ from vllm.entrypoints.openai.engine.protocol import (
+ from vllm.entrypoints.openai.models.serving import OpenAIServingModels
  from vllm.entrypoints.serve.utils.api_utils import get_max_tokens, should_include_usage
  from vllm.entrypoints.serve.utils.request_logger import RequestLogger
 -from vllm.inputs import EngineInput, mm_input
@@ -65,15 +51,12 @@ index 72aeb84..fbe0c7d 100644
  from vllm.logger import init_logger
  from vllm.logprobs import Logprob
  from vllm.multimodal.inputs import (
-@@ -139,7 +140,40 @@ class ServingTokens(OpenAIServing):
+@@ -143,7 +144,37 @@ class ServingTokens(GenerateBaseServing):
              return self.create_error_response(e)
  
          engine_input: EngineInput
 -        if features := request.features:
 +        if request.content_parts:
-+            # Raw media supplied alongside caller-controlled token ids. The
-+            # renderer expands the placeholder tokens in-process, so no
-+            # placeholder offsets have to cross the HTTP boundary.
 +            tracker = AsyncMultiModalItemTracker(self.model_config)
 +            mm_parser = tracker.create_parser()
 +            for part in request.content_parts:
@@ -100,7 +83,7 @@ index 72aeb84..fbe0c7d 100644
 +            if request.cache_salt:
 +                prompt["cache_salt"] = request.cache_salt
 +
-+            (engine_input,) = await self.openai_serving_render.renderer.render_cmpl_async(
++            (engine_input,) = await self.online_renderer.renderer.render_cmpl_async(
 +                [prompt]
 +            )
 +        elif features := request.features:

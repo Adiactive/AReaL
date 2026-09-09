@@ -16,22 +16,19 @@ from vllm.entrypoints.openai.completion.api_router import (
 )
 from vllm.entrypoints.openai.completion.protocol import CompletionRequest
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse, OpenAIBaseModel
-from vllm.entrypoints.serve.disagg.api_router import generate as _decorated_generate
-from vllm.entrypoints.serve.disagg.protocol import GenerateRequest
+from vllm.entrypoints.scale_out.token_in_token_out.api_router import (
+    generate as _decorated_generate,
+)
+from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateRequest
+from vllm.entrypoints.serve.utils.api_utils import (
+    cli_env_setup,
+    load_aware_call,
+    validate_json_request,
+    with_cancellation,
+)
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.utils.argparse_utils import FlexibleArgumentParser
-
-try:
-    from vllm.entrypoints.serve.utils.api_utils import (
-        cli_env_setup,
-        load_aware_call,
-        validate_json_request,
-        with_cancellation,
-    )
-except ImportError:
-    from vllm.entrypoints.openai.utils import validate_json_request
-    from vllm.entrypoints.utils import cli_env_setup, load_aware_call, with_cancellation
 
 # AReaL's own router for custom endpoints (replaces vLLM's removed global router)
 router = APIRouter()
