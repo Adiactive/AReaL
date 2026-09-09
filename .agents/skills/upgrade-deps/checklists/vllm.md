@@ -4,8 +4,10 @@ github: vllm-project/vllm
 branch_template: v${VERSION}
 upstream_paths:
   - vllm/entrypoints/openai/
+  - vllm/entrypoints/scale_out/token_in_token_out/
   - vllm/lora/
   - vllm/model_executor/model_loader/
+  - vllm/model_executor/layers/fused_moe/
   - vllm/v1/worker/gpu_worker.py
   - vllm/worker/worker.py
   - vllm/reasoning/
@@ -18,11 +20,12 @@ upstream_paths:
 
 ### Primary (engine layer — most likely to break)
 
-| File                                             | Imports / Usage                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `areal/engine/vllm_ext/vllm_worker_extension.py` | `vllm.logger.init_logger`, `vllm.lora.lora_model.LoRAModel`, `vllm.lora.peft_helper.PEFTHelper`, `vllm.lora.request.LoRARequest`, `vllm.model_executor.model_loader.get_model_loader`; **private APIs**: `_adapter_manager._registered_adapters`, `._add_adapter`, `.activate_adapter`                                                                                                                                                                                                                                                                                                          |
-| `areal/engine/vllm_ext/areal_vllm_server.py`     | `vllm.entrypoints.openai.api_server.build_app`, `.run_server`; `vllm.entrypoints.openai.cli_args.make_arg_parser`, `.validate_parsed_serve_args`; `vllm.entrypoints.openai.completion.api_router.create_completion`; `vllm.entrypoints.openai.completion.protocol.CompletionRequest`; `vllm.entrypoints.openai.engine.protocol.ErrorResponse`, `.OpenAIBaseModel`; `vllm.entrypoints.openai.utils.validate_json_request`; `vllm.entrypoints.utils.cli_env_setup`, `.load_aware_call`, `.with_cancellation`; `vllm.lora.request.LoRARequest`; `vllm.utils.argparse_utils.FlexibleArgumentParser` |
-| `areal/engine/vllm_remote.py`                    | HTTP-only — builds vLLM launch commands via `vLLMConfig.build_cmd_from_args()`; sets `VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| File                                                  | Imports / Usage                                                                                                                                                                                                                                                                        |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `areal/engine/vllm_ext/vllm_worker_extension.py`      | `vllm.logger.init_logger`, `vllm.lora.lora_model.LoRAModel`, `vllm.lora.peft_helper.PEFTHelper`, `vllm.lora.request.LoRARequest`, `vllm.model_executor.model_loader.get_model_loader`; **private APIs**: `_adapter_manager._registered_adapters`, `._add_adapter`, `.activate_adapter` |
+| `areal/engine/vllm_ext/areal_vllm_server.py`          | OpenAI `build_app`/`run_server`, completions protocol/router, server utilities, LoRA request and CLI APIs; token-in/token-out `GenerateRequest`/`generate` from `scale_out`                                                                                                            |
+| `areal/engine/vllm_remote.py`                         | HTTP-only — builds vLLM launch commands via `vLLMConfig.build_cmd_from_args()`; sets `VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`                                                                                                                                                           |
+| `areal/experimental/inference_service/vllm/bridge.py` | HTTP-only — sends `/inference/v1/generate` requests containing authoritative `token_ids`, raw `content_parts`, and `expected_token_ids`                                                                                                                                                |
 
 ### Secondary (model / infra layer)
 
@@ -34,10 +37,14 @@ upstream_paths:
 
 ### Tertiary (tests, config)
 
-| File                                                 | Imports / Usage                          |
-| ---------------------------------------------------- | ---------------------------------------- |
-| `tests/experimental/openai/test_tool_call_parser.py` | unit tests with vLLM mocking             |
-| `tests/test_inference_engines.py`                    | integration tests for `RemotevLLMEngine` |
+| File                                                 | Imports / Usage                                 |
+| ---------------------------------------------------- | ----------------------------------------------- |
+| `tests/experimental/openai/test_tool_call_parser.py` | unit tests with vLLM mocking                    |
+| `tests/test_inference_engines.py`                    | integration tests for `RemotevLLMEngine`        |
+| `tests/test_vllm_generation_request.py`              | token-in/token-out multimodal request contract  |
+| `tests/test_prompt_mismatch_abort.py`                | validates exact-token patch refusal markers     |
+| `tests/test_vision_canary.py`                        | validates patched frontend canary behavior      |
+| `tests/test_vllm_moe_reload.py`                      | NPU expert layout restoration and non-NPU no-op |
 
 ### External (awex — separate subsystem)
 
@@ -128,14 +135,19 @@ returns a FastAPI `Depends`.
 
 ______________________________________________________________________
 
-### 4. `vllm.entrypoints.utils` — server utilities
+### 4. vLLM server utilities
 
-**Source:** `vllm/entrypoints/utils.py`
+**Source:** `vllm/entrypoints/serve/utils/api_utils.py`
 
 Called in `areal/engine/vllm_ext/areal_vllm_server.py` (lines 19, 349-350, 390):
 
 ```python
-from vllm.entrypoints.utils import cli_env_setup, load_aware_call, with_cancellation
+from vllm.entrypoints.serve.utils.api_utils import (
+    cli_env_setup,
+    load_aware_call,
+    validate_json_request,
+    with_cancellation,
+)
 
 # Used as stacked decorators on the create_completion endpoint (lines 349-350):
 @with_cancellation
@@ -147,7 +159,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 cli_env_setup()
 ```
 
-**Check:** Confirm all three are still exported from `vllm.entrypoints.utils`. Verify
+**Check:** Confirm all four are exported from the current utility module. Verify
 `with_cancellation` is still a decorator compatible with async endpoints. Verify
 `load_aware_call` is still a decorator (not renamed to `load_aware`). Confirm
 `cli_env_setup()` is still a no-arg function.
@@ -366,6 +378,60 @@ Called indirectly via `vLLMConfig.build_cmd_from_args()` in `areal/api/cli_args.
 **Check:** For each field in `vLLMConfig`, confirm the corresponding vLLM CLI flag still
 exists. Pay attention to `--enable-lora` and related LoRA flags. Verify env var
 `VLLM_ALLOW_RUNTIME_LORA_UPDATING` is still respected.
+
+______________________________________________________________________
+
+### 15. `/inference/v1/generate` exact-token multimodal contract
+
+**Source:** `vllm/entrypoints/scale_out/token_in_token_out/api_router.py`,
+`protocol.py`, and `serving.py`
+
+Called in `areal/experimental/inference_service/vllm/bridge.py`:
+
+```python
+payload = {
+    "token_ids": collapsed_input_ids,
+    "content_parts": raw_multimodal_parts,
+    "expected_token_ids": input_ids,
+    "sampling_params": sampling_params,
+}
+```
+
+Wrapped in `areal/engine/vllm_ext/areal_vllm_server.py` so generation waits while an
+AReaL weight update is active. The two extra request fields are supplied by versioned
+patches under `patches/` until their upstream equivalents are released.
+
+**Check:** Confirm the generate handler and `GenerateRequest` module paths. Verify the
+handler remains an async FastAPI endpoint with `(request, raw_request)`. Confirm
+preprocessing leaves the fully expanded prompt in `engine_input["prompt_token_ids"]`
+before scheduling, because the exact-token patch compares it with `expected_token_ids`.
+Verify unknown Pydantic fields are not silently relied upon.
+
+______________________________________________________________________
+
+### 16. Ascend MoE weight postprocessing and reload
+
+**Source:** `vllm/model_executor/layers/fused_moe/runner/moe_runner.py`,
+`vllm/model_executor/layers/fused_moe/routed_experts.py`,
+`vllm/model_executor/model_loader/utils.py`, and
+`vllm_ascend/ops/fused_moe/fused_moe.py` (vllm-ascend)
+
+Called before disk and HCCL reload in `areal/engine/vllm_ext/vllm_worker_extension.py`:
+
+```python
+undo_moe_postprocess_for_reload(self.model_runner.model)
+```
+
+The NPU-only helper transposes parameters ending in `.experts.routed_experts.w13_weight`
+or `.experts.routed_experts.w2_weight` back to checkpoint layout. Loading is followed by
+`process_weights_after_loading(model, model_config, target_device)`.
+
+**Check:** Inspect parameter ownership, not just loader signatures. vLLM 0.26 moved
+expert weights onto `MoERunner.routed_experts`; matching the former
+`mlp.experts.w13_weight` path silently skips restoration. Verify that the Ascend method
+still transposes dimensions 1 and 2, whether it pads or replaces parameters, and that
+`weight_loader` remains available after postprocessing. Test repeated reloads and ensure
+non-NPU weights and quantization scales stay untouched.
 
 ______________________________________________________________________
 
