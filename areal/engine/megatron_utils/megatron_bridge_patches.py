@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runtime adaptations for Megatron-Bridge LoRA on NPU."""
+"""Runtime adaptations for Megatron-Bridge on NPU."""
 
 from __future__ import annotations
 
+from functools import wraps
 from typing import Any
 
 import areal.utils.logging as logging
@@ -101,3 +102,34 @@ def patch_qwen3_moe_lora_spec(provider: Any) -> None:
         "Using unfused attention QKV spec for Qwen3-MoE LoRA; preserving the "
         "native router and expert specifications."
     )
+
+
+def patch_qwen3_vl_vision_config() -> None:
+    """Keep inherited MindSpeed MoE options out of dense Qwen vision configs."""
+    from megatron.bridge.models.qwen_vl.modelling_qwen3_vl.transformer_config import (
+        Qwen3VLTransformerConfig,
+    )
+
+    original = Qwen3VLTransformerConfig.__post_init__
+    if getattr(original, "_areal_dense_vision_config", False):
+        return
+
+    @wraps(original)
+    def _post_init(config: Any) -> None:
+        if not config.num_moe_experts:
+            for name in (
+                "gemm_gradient_accumulation_fusion",
+                "moe_alltoall_overlap_comm",
+                "moe_permute_fusion",
+                "use_fused_moe_token_permute_and_unpermute",
+            ):
+                if hasattr(config, name):
+                    setattr(config, name, False)
+            if hasattr(config, "moe_zero_memory"):
+                config.moe_zero_memory = "disable"
+            if hasattr(config, "moe_zero_memory_num_layers"):
+                config.moe_zero_memory_num_layers = None
+        original(config)
+
+    _post_init._areal_dense_vision_config = True
+    Qwen3VLTransformerConfig.__post_init__ = _post_init
