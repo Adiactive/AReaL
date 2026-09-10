@@ -76,8 +76,11 @@ RUN export PIP_EXTRA_INDEX_URL="https://mirrors.huaweicloud.com/ascend/repos/pyp
     python3 -m pip cache purge
 
 # Install the MCore 0.18 NPU stack in its required MA -> TENPU -> MindSpeed order.
+# Expose only megatron/ on PYTHONPATH to avoid examples package collisions.
 RUN git clone --branch ${MEGATRON_BRANCH} https://github.com/NVIDIA/Megatron-LM.git /areal-workspace/Megatron-LM && \
     git -C /areal-workspace/Megatron-LM checkout ${MEGATRON_COMMIT} && \
+    mkdir -p /areal-workspace/megatron-python && \
+    ln -s /areal-workspace/Megatron-LM/megatron /areal-workspace/megatron-python/megatron && \
     git clone --branch ${MEGATRON_ADAPTOR_BRANCH} https://gitcode.com/Ascend/MegatronAdaptor.git /areal-workspace/MegatronAdaptor && \
     git -C /areal-workspace/MegatronAdaptor checkout ${MEGATRON_ADAPTOR_COMMIT} && \
     python3 -m pip install -e /areal-workspace/MegatronAdaptor --no-deps && \
@@ -117,13 +120,14 @@ RUN cp /AReaL/pyproject.npu.toml /AReaL/pyproject.toml && \
     uv pip install --no-deps -e /AReaL --system && \
     python3 -c "import importlib.metadata as m, tomllib; expected = tomllib.load(open('/AReaL/pyproject.toml', 'rb'))['project']['version']; actual = m.version('areal'); assert actual == expected, f'areal reports {actual}, expected {expected}'"
 
-ENV PYTHONPATH=/areal-workspace/MegatronAdaptor:/areal-workspace/TransformerEngineNPU:/areal-workspace/MindSpeed:/areal-workspace/Megatron-LM:/areal-workspace/Megatron-Bridge/src:$PYTHONPATH
+ENV PYTHONPATH=/areal-workspace/MegatronAdaptor:/areal-workspace/TransformerEngineNPU:/areal-workspace/MindSpeed:/areal-workspace/megatron-python:/areal-workspace/Megatron-Bridge/src:$PYTHONPATH
 
-# Full imports require libascend_hal.so from the host driver mount at runtime.
+# Validate dependency metadata and module paths without importing NPU backends.
 RUN python3 -c "from importlib.metadata import version; from packaging.version import Version; expected = {'torch': '2.10.0', 'torch-npu': '2.10.0.post4', 'triton-ascend': '3.2.2', 'transformers': '5.14.1'}; actual = {name: Version(version(name)).public for name in expected}; assert actual == expected, (actual, expected)" && \
     python3 -c "import tomllib; from importlib.metadata import version; from packaging.requirements import Requirement; deps = tomllib.load(open('/AReaL/pyproject.toml', 'rb'))['project']['dependencies']; requirements = [Requirement(dep) for dep in deps]; mismatches = [(r.name, version(r.name), str(r.specifier)) for r in requirements if (r.marker is None or r.marker.evaluate()) and r.specifier and not r.specifier.contains(version(r.name))]; assert not mismatches, mismatches" && \
     python3 -c "from importlib.metadata import version; from packaging.requirements import Requirement; requirements = [Requirement(dep) for dep in ('fastapi>=0.133.0,<0.137', 'starlette>=1.0.1', 'openai>=2.44.0')]; mismatches = [(r.name, version(r.name), str(r.specifier)) for r in requirements if not r.specifier.contains(version(r.name))]; assert not mismatches, mismatches" && \
-    python3 -c "from importlib.util import find_spec; modules = ('megatron_adaptor', 'transformer_engine', 'mindspeed', 'mbridge', 'megatron'); missing = [name for name in modules if find_spec(name) is None]; assert not missing, missing"
+    python3 -c "from importlib.util import find_spec; modules = ('megatron_adaptor', 'transformer_engine', 'mindspeed', 'mbridge', 'megatron.core', 'megatron.training', 'megatron.bridge'); missing = [name for name in modules if find_spec(name) is None]; assert not missing, missing" && \
+    python3 -c "from importlib.util import find_spec; spec = find_spec('examples.vlm.geometry3k_grpo'); assert spec is not None and spec.origin == '/AReaL/examples/vlm/geometry3k_grpo.py', spec"
 
 ENV HCCL_IF_BASE_PORT=63000 \
     HCCL_NPU_SOCKET_PORT_RANGE="62100-62350"
