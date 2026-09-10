@@ -1,5 +1,6 @@
 import argparse
 import copy
+import json
 import os
 import tempfile
 from functools import cache
@@ -117,6 +118,7 @@ def mock_input(
     min_seqlen=1,
     max_seqlen=1024,
     device=current_platform.device_type,
+    vocab_size: int | None = None,
 ) -> dict[str, Any]:
     """Create mock padded input data (same format for huggingface) for testing.
     Returns a dict with input_ids, attention_mask, and position_ids.
@@ -127,7 +129,11 @@ def mock_input(
     )
     max_seqlen = int(max(seqlens))
     input_ids = torch.randint(
-        10000, 50000, (batch_size, max_seqlen), dtype=torch.long, device=device
+        8 if vocab_size is not None else 10000,
+        vocab_size if vocab_size is not None else 50000,
+        (batch_size, max_seqlen),
+        dtype=torch.long,
+        device=device,
     )
     attn_mask = torch.zeros((batch_size, max_seqlen), dtype=torch.bool, device=device)
 
@@ -195,7 +201,18 @@ def test_forward(
     engine = make_engine(model_type, alloc_mode, mb_spec, vpp_size=vpp_size)
     seeding.set_random_seed(0, key=f"trainer{rank}")
 
-    input_ = mock_input(batch_size=16, max_seqlen=128, device=engine.device)
+    text_config = getattr(engine.hf_config, "text_config", engine.hf_config)
+    fixture_vocab = (
+        text_config.vocab_size
+        if getattr(engine.hf_config, "areal_test_fixture", False)
+        else None
+    )
+    input_ = mock_input(
+        batch_size=16,
+        max_seqlen=128,
+        device=engine.device,
+        vocab_size=fixture_vocab,
+    )
     print(f"rank {rank} is_data_parallel_head()={engine.is_data_parallel_head()}")
     bcasted_input = broadcast_tensor_container(
         input_,
@@ -636,6 +653,28 @@ def test_train_hf_save_load(
 
     # save via HF format
     engine._save_model_to_hf(save_dir, tokenizer)
+
+    if (
+        rank == 0
+        and model_type == "qwen3_5_moe"
+        and getattr(engine.hf_config, "areal_test_fixture", False)
+    ):
+        source_mtp = engine._read_source_mtp_by_shard(_get_model_path(model_type))
+        saved_mtp = engine._read_source_mtp_by_shard(save_dir)
+        assert source_mtp, "The fixture must exercise frozen MTP passthrough"
+        assert source_mtp.keys() == saved_mtp.keys()
+        for shard, tensors in source_mtp.items():
+            assert tensors.keys() == saved_mtp[shard].keys()
+            for name, tensor in tensors.items():
+                torch.testing.assert_close(
+                    saved_mtp[shard][name], tensor, rtol=0, atol=0
+                )
+        with open(os.path.join(save_dir, "config.json")) as f:
+            saved_config = json.load(f)
+        assert saved_config["text_config"]["mtp_num_hidden_layers"] == 1
+        with open(os.path.join(save_dir, "model.safetensors.index.json")) as f:
+            weight_map = json.load(f)["weight_map"]
+        assert weight_map["lm_head.weight"] == weight_map["mtp.fc.weight"]
 
     # zero all params to prove load actually restores them
     with torch.no_grad():
