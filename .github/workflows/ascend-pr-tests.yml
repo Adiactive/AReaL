@@ -258,9 +258,7 @@ jobs:
       AREAL_IS_IN_CI: "1"
       NPU_TEST_BASE_SHA: ""
       AREAL_TEST_QWEN3_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B"
-      AREAL_TEST_QWEN3_MOE_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3-30B-A3B"
-      AREAL_TEST_QWEN35_PATH: "/root/.cache/modelscope/hub/models/Qwen3.5-0.8B"
-      AREAL_TEST_QWEN35_MOE_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3.5-35B-A3B"
+      AREAL_TEST_QWEN35_PATH: "/root/.cache/modelscope/hub/models/Qwen/Qwen3.5-0.8B"
       HF_ENDPOINT: "https://hf-mirror.com"
       HF_HUB_DISABLE_XET: "1"
       PYTHONUNBUFFERED: "1"
@@ -374,6 +372,8 @@ jobs:
           collect_base_tests perf-tracer tests/test_perf_tracer.py
           collect_base_tests ulysses tests/test_ulysses.py
           collect_base_tests vocab-parallel tests/test_vocab_parallel.py
+          collect_base_tests exact-token-contract \
+            tests/experimental/inference_service/test_exact_token_contract_integration.py
 
       - name: Verify NPU runtime
         run: |
@@ -394,7 +394,7 @@ jobs:
 
           npu-smi info
 
-      - name: Verify cached NPU test models
+      - name: Resolve cached NPU test models
         run: |
           set -euo pipefail
 
@@ -406,13 +406,41 @@ jobs:
             weight_file=$(find -L "${model_path}" -maxdepth 1 -type f \
               \( -name '*.safetensors' -o -name '*.bin' \) -print -quit)
             [[ -n "${weight_file}" ]]
-            echo "Using cached model: ${model_path}"
           }
 
-          verify_model "${AREAL_TEST_QWEN3_PATH}"
-          verify_model "${AREAL_TEST_QWEN3_MOE_PATH}"
-          verify_model "${AREAL_TEST_QWEN35_PATH}"
-          verify_model "${AREAL_TEST_QWEN35_MOE_PATH}"
+          resolve_model() {
+            local env_name="$1"
+            local model_name="$2"
+            local encoded_name="${model_name//./___}"
+            local modelscope_root="${HOME}/.cache/modelscope/hub/models"
+            local huggingface_root="${HF_HUB_CACHE:-${HF_HOME:-${HOME}/.cache/huggingface}/hub}"
+            local candidate
+            local -a candidates=(
+              "${!env_name}"
+              "${modelscope_root}/Qwen/${model_name}"
+              "${modelscope_root}/Qwen/${encoded_name}"
+              "${modelscope_root}/${model_name}"
+              "${modelscope_root}/${encoded_name}"
+              "${huggingface_root}/models--Qwen--${model_name}/snapshots/"*
+            )
+
+            for candidate in "${candidates[@]}"; do
+              if verify_model "${candidate}"; then
+                echo "${env_name}=${candidate}" >> "${GITHUB_ENV}"
+                echo "Using cached model for ${model_name}: ${candidate}"
+                return 0
+              fi
+            done
+
+            echo "::error title=Cached model unavailable::${model_name} requires config.json and a top-level .safetensors or .bin weight file"
+            printf 'Checked: %s\n' "${candidates[@]}"
+            return 1
+          }
+
+          failed=0
+          resolve_model AREAL_TEST_QWEN3_PATH Qwen3-0.6B || failed=1
+          resolve_model AREAL_TEST_QWEN35_PATH Qwen3.5-0.8B || failed=1
+          exit "${failed}"
 
       - name: Run NPU-image dependency tests
         env:
@@ -437,11 +465,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          export AREAL_TEST_VLM_PATH="${AREAL_TEST_QWEN35_PATH}"
+
           mkdir -p npu-test-logs
-          mkdir -p /root/.cache/areal-ci-tmp
 
           hf_tmpdir=$(mktemp -d \
-            "/root/.cache/areal-ci-tmp/hf-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
+            "/tmp/areal-ci-hf-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
           qwen35_tmpdir=$(mktemp -d \
             "/tmp/areal-ci-qwen35-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
           compute_tmpdir=$(mktemp -d \
@@ -454,6 +483,12 @@ jobs:
               "${compute_tmpdir}"
           }
           trap cleanup EXIT
+
+          python -m tests.moe_checkpoint_fixtures \
+            --output-dir "${compute_tmpdir}/models"
+          export AREAL_TEST_QWEN3_MOE_PATH="${compute_tmpdir}/models/qwen3moe"
+          export AREAL_TEST_QWEN35_MOE_PATH="${compute_tmpdir}/models/qwen3_5_moe"
+          du -sh "${AREAL_TEST_QWEN3_MOE_PATH}" "${AREAL_TEST_QWEN35_MOE_PATH}"
 
           finish_log() {
             local name="$1"
@@ -578,12 +613,19 @@ jobs:
               4,5 \
               tests/test_megatron_engine_distributed.py::test_qwen3_5_pipeline_parallel
             start_normal_test \
+              exact-token-contract \
+              7 \
+              tests/experimental/inference_service/test_exact_token_contract_integration.py
+            run_test \
               qwen35-single-forward \
               6 \
-              tests/test_megatron_engine_distributed.py::test_qwen3_5_single_gpu_forward
+              tests/test_megatron_engine_distributed.py::test_qwen3_5_single_gpu_forward \
+              "${wave_tmpdir}" \
+              900 \
+              || failed=1
             start_normal_test \
               distributed-lock \
-              7 \
+              6 \
               'tests/test_lock.py::test_distributed_lock_single_rank[1]'
             wait_for_normal_wave
 
@@ -597,7 +639,7 @@ jobs:
             local -a pids=()
 
             run_test \
-              qwen35-35b-hf-save-load \
+              qwen35-moe-hf-save-load \
               0,1,2,3,4,5,6,7 \
               tests/test_megatron_engine_distributed.py::test_qwen3_5_moe_hf_save_load \
               "${hf_tmpdir}" \
@@ -606,14 +648,14 @@ jobs:
             rm -rf -- "${hf_tmpdir}"
 
             run_test \
-              qwen35-35b-expert-parallel \
+              qwen35-moe-expert-parallel \
               0,1,2,3,4,5,6,7 \
               tests/test_megatron_engine_distributed.py::test_qwen3_5_moe_expert_parallel \
               "${compute_tmpdir}" \
               1200 \
               || failed=1
             run_test \
-              qwen3-30b-expert-parallel \
+              qwen3-moe-expert-parallel \
               0,1,2,3,4,5,6,7 \
               tests/test_megatron_engine_distributed.py::test_qwen3moe_expert_parallel \
               "${compute_tmpdir}" \

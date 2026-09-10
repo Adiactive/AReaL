@@ -115,8 +115,8 @@ def test_qwen3_virtual_pipeline_parallel(tmp_path_factory):
 def test_qwen3moe_expert_parallel(tmp_path_factory):
     """Qwen3-MoE forward with context and expert parallelism.
 
-    NPU uses PP=2 across eight ranks to keep the 30B model within per-rank
-    memory. Other platforms retain the four-rank layout.
+    NPU retains PP=2 across eight ranks, including for the generated CI fixture.
+    Other platforms retain the four-rank layout.
     """
     pipeline_parallel_size = 2 if current_platform.device_type == "npu" else 1
     world_size = pipeline_parallel_size * 4
@@ -302,8 +302,8 @@ def test_qwen3_5_moe_expert_parallel(tmp_path_factory):
     """Qwen3.5-MoE megatron forward with expert parallelism.
 
     The MoE analog of ``test_qwen3moe_expert_parallel``. CP is unavailable for
-    the GDN layers and the full-attention layers cap TP at 2. NPU uses PP=4 to
-    fit the model across 8 ranks; other platforms retain the 4-rank PP=2 layout.
+    the GDN layers and the full-attention layers cap TP at 2. NPU retains PP=4
+    across 8 ranks with the generated CI fixture; other platforms use PP=2.
     Experts run at EP=2. The megatron-vs-FSDP cross-check is skipped for this
     model (see ``_MODEL_SKIP_FSDP_COMPARE``) because a 35B-A3B FSDP replica
     cannot co-reside with the megatron model. This validates engine init + GDN
@@ -337,8 +337,9 @@ def test_qwen3_5_moe_hf_save_load(tmp_path_factory):
     ``flattened_range`` tensors yet. The train step is skipped for this model
     (see ``_MODEL_SAVELOAD_SKIP_TRAIN`` in the runner) because a 35B-A3B
     optimizer state does not fit; the loaded HF weights are already non-trivial,
-    so the round-trip still exercises expert-weight conversion. NPU uses PP=4
-    across 8 ranks to reduce per-rank memory; other platforms retain PP=2.
+    so the round-trip still exercises expert-weight conversion. CI supplies a
+    small generated checkpoint. NPU retains PP=4 across 8 ranks; other
+    platforms retain PP=2.
     """
     pipeline_parallel_size = 4 if current_platform.device_type == "npu" else 2
     world_size = pipeline_parallel_size * 2
