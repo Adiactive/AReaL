@@ -6,14 +6,14 @@ explicit point in the target's installation, so a patch that no longer applies f
 build instead of silently dropping the fix. The vLLM patches run after their editable
 installs; the Megatron-Bridge patch runs immediately after its pinned checkout.
 
-| Patch                                       | Applies to               | Image     | Upstream                                                                                                                                                                                                           | Delete when                                     |
-| ------------------------------------------- | ------------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
-| `vllm-content-parts.patch`                  | vLLM `v0.26.0`           | A2 and A3 | [vllm#51478](https://github.com/vllm-project/vllm/pull/51478)                                                                                                                                                      | the pin contains #51478                         |
-| `vllm-exact-token-validation.patch`         | vLLM `v0.26.0`           | A2 and A3 | none — AReaL-local                                                                                                                                                                                                 | upstream exposes an equivalent prompt assertion |
-| `megatron-bridge.v0.5.1-vision-dp-cp.patch` | Megatron-Bridge `v0.5.1` | A2 and A3 | [Bridge#4784](https://github.com/NVIDIA-NeMo/Megatron-Bridge/pull/4784), [Qwen3-ASR guard](https://github.com/NVIDIA-NeMo/Megatron-Bridge/blob/main/src/megatron/bridge/models/qwen3_asr/hf_qwen3_asr/__init__.py) | the pin contains both upstream fixes            |
+| Patch                                       | Applies to                                      | Image     | Upstream                                                                                                                                                                                                           | Delete when                                     |
+| ------------------------------------------- | ----------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| `vllm-exact-token-validation.patch`         | vLLM `v0.30.0`                                  | A2 and A3 | none — AReaL-local                                                                                                                                                                                                 | upstream exposes an equivalent prompt assertion |
+| `awex-vllm-0.30.patch`                      | AWEX `cfda2451281613167b8644ce86c2388f18c166dd` | A2 and A3 | none — vLLM import compatibility                                                                                                                                                                                   | the AWEX pin uses the vLLM 0.30 module paths    |
+| `megatron-bridge.v0.5.1-vision-dp-cp.patch` | Megatron-Bridge `v0.5.1`                        | A2 and A3 | [Bridge#4784](https://github.com/NVIDIA-NeMo/Megatron-Bridge/pull/4784), [Qwen3-ASR guard](https://github.com/NVIDIA-NeMo/Megatron-Bridge/blob/main/src/megatron/bridge/models/qwen3_asr/hf_qwen3_asr/__init__.py) | the pin contains both upstream fixes            |
 
-The vLLM patches are applied in table order and target vLLM 0.26. The content transport
-and exact-token assertion stay separate because their lifetimes differ.
+vLLM 0.30 includes the upstream content transport change (#51478), so only the
+AReaL-local exact-token assertion is patched.
 
 The vllm-ascend pin includes
 [#15981](https://github.com/vllm-project/vllm-ascend/pull/15981), which repairs cached
@@ -21,20 +21,35 @@ upstream MoE factory bindings in already imported model modules. The local Qwen3
 import-order workaround is no longer needed. This is separate from the Megatron-Bridge
 Qwen3-ASR registration guard below, which is still required.
 
-The two vLLM patches carry AReaL's exact-token generation contract, so that a multimodal
+The vLLM patch preserves AReaL's exact-token generation contract, so that a multimodal
 rollout computes behavior logprobs from the same token sequence it trains on. See issue
 #1612 for the problem statement and the staged plan.
 
-- **vllm#51478** — merged upstream on 2026-08-11, after the `v0.23.0` and `v0.26.0`
-  tags. Adds `content_parts` to `/inference/v1/generate` so one request carries
-  caller-supplied token ids together with raw media. Python frontend only: AReaL
-  launches vLLM through `areal.engine.vllm_ext.areal_vllm_server`, which patches Python
-  vLLM's `build_app`.
+- **vllm#51478** — merged upstream on 2026-08-11, after the `v0.23.0` and `v0.26.0` tags
+  and included in `v0.30.0`. Adds `content_parts` to `/inference/v1/generate` so one
+  request carries caller-supplied token ids together with raw media. Python frontend
+  only: AReaL launches vLLM through `areal.engine.vllm_ext.areal_vllm_server`, which
+  patches Python vLLM's `build_app`.
 - **exact-token-validation** — AReaL-local, no upstream equivalent. vLLM expands
   multimodal placeholders itself, so the caller sends the collapsed prompt in
   `token_ids` and its locally expanded prompt in `expected_token_ids`; the server
-  refuses to generate unless its expansion matches. Neither vLLM patch may reference
-  AReaL's pause event — weight-update policy stays in AReaL source.
+  refuses to generate unless its expansion matches. The patch must not reference AReaL's
+  pause event — weight-update policy stays in AReaL source.
+
+## AWEX source override
+
+The ARM64 images install AWEX from `HwVanICI/asystem-awex` at
+`cfda2451281613167b8644ce86c2388f18c166dd` (package version `0.2.0`), after the
+application dependencies. The patch updates the protocol import and the `build_app` hook
+to vLLM 0.30's module paths. It is applied before the non-editable source install. The
+AReaL runtime patches for expert names and derived inference weights are included by the
+normal source copy.
+
+Build with `--build-arg AWEX_COMMIT=` to skip the source override and its patch, using
+the AWEX version in `pyproject.npu.toml` instead. No manifest edit is needed to switch
+back. `AWEX_REPO`, `AWEX_COMMIT`, and `AWEX_VERSION` describe the source override; the
+final dependency check validates that version when enabled and the manifest requirement
+otherwise.
 
 ## Megatron-Bridge compatibility fixes
 

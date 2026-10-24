@@ -8,18 +8,20 @@ from http import HTTPStatus
 import uvloop
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from vllm.entrypoints.openai.api_server import build_app as _original_build_app
-from vllm.entrypoints.openai.api_server import run_server
-from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
+from vllm.entrypoints.launchers.api_server.entry import run_server
+from vllm.entrypoints.launchers.cli_args import (
+    make_arg_parser,
+    validate_parsed_serve_args,
+)
 from vllm.entrypoints.openai.completion.api_router import (
     create_completion as _decorated_create_completion,
 )
 from vllm.entrypoints.openai.completion.protocol import CompletionRequest
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse, OpenAIBaseModel
 from vllm.entrypoints.scale_out.token_in_token_out.api_router import (
     generate as _decorated_generate,
 )
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateRequest
+from vllm.entrypoints.serve.engine.protocol import ErrorResponse, OpenAIBaseModel
 from vllm.entrypoints.serve.utils.api_utils import (
     cli_env_setup,
     load_aware_call,
@@ -423,7 +425,10 @@ if __name__ == "__main__":
     # NOTE(simon):
     # This section should be in sync with vllm/entrypoints/cli/main.py for CLI
     # entrypoints.
-    import vllm.entrypoints.openai.api_server as _api_server_module
+    import vllm.entrypoints.launchers.api_server.entry as _api_server_module
+
+    # Preserve endpoint plugins that have already wrapped the active builder.
+    _original_build_app = _api_server_module.build_app
 
     # Generation routes AReaL replaces with pause-aware wrappers. Every route
     # that reaches the engine must wait on the pause event, or a weight update
@@ -431,9 +436,7 @@ if __name__ == "__main__":
     _OVERRIDDEN_POST_ROUTES = ("/v1/completions", "/inference/v1/generate")
 
     def _areal_build_app(*args, **kwargs):
-        """Monkey-patched build_app: swap in AReaL's generation routes + custom
-        endpoints. ``**kwargs`` forwards version-specific params (model_config was
-        added in vLLM 0.19) so it works on both 0.18 and 0.19."""
+        """Attach AReaL endpoints and replace generation routes with pause gates."""
         app = _original_build_app(*args, **kwargs)
         replaced = [
             route
@@ -465,6 +468,8 @@ if __name__ == "__main__":
     )
     parser = make_arg_parser(parser)
     args = parser.parse_args()
+    # The exact-token rollout endpoint is opt-in in vLLM 0.30.
+    args.enable_scale_out = True
     validate_parsed_serve_args(args)
 
     if getattr(args, "headless", False):
