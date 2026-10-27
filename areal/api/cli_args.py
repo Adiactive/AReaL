@@ -1983,9 +1983,9 @@ class vLLMConfig:
     additional_config: dict | None = None
     # Speculative decoding config passed through to vLLM's --speculative-config.
     # For Qwen3.5/3.6 MTP draft heads use e.g.
-    # {"method": "qwen3_5_mtp", "num_speculative_tokens": 3}. The MTP head is
-    # loaded from the model checkpoint at startup and, since the training engine
-    # never syncs MTP weights, stays frozen throughout training.
+    # {"method": "mtp", "num_speculative_tokens": 3}. The head loads from the
+    # checkpoint at startup; XCCL updates also reload exported MTP weights.
+    # XCCL preserves MTP-specific layers when the actor exports no MTP weights.
     speculative_config: dict | None = None
     no_async_scheduling: bool = False
 

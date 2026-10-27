@@ -367,6 +367,10 @@ jobs:
             tests/test_megatron_bridge_vision_cp.py
           collect_base_tests reassemble-cp-logprobs \
             -m skipif tests/test_reassemble_cp_logprobs.py
+          collect_base_tests npu-weight-reload-native \
+            tests/test_npu_weight_reload_native.py
+          collect_base_tests npu-weight-reload-graph \
+            tests/test_npu_weight_reload_graph.py
           collect_base_tests megatron-distributed \
             tests/test_megatron_engine_distributed.py
           collect_base_tests megatron-loss-aggregation \
@@ -460,6 +464,19 @@ jobs:
             tests/test_model_packed_seq_cp.py
           pytest -q -p scripts.ci_test_report \
             -m skipif tests/test_reassemble_cp_logprobs.py
+          pytest -q -p scripts.ci_test_report \
+            tests/test_npu_weight_reload_native.py
+
+      - name: Run NPU weight-reload graph regression
+        timeout-minutes: 5
+        env:
+          AREAL_TEST_REPORT_DIR: /tmp/current-npu-test-reports
+          ASCEND_RT_VISIBLE_DEVICES: "0"
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          pytest -q -p scripts.ci_test_report \
+            tests/test_npu_weight_reload_graph.py
 
       - name: Run NPU test suites
         env:
