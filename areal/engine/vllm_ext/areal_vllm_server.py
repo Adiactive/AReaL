@@ -231,12 +231,9 @@ async def areal_update_weight_lora(
 async def areal_update_weight_xccl(raw_request: Request):
     logger.info("API server starts areal_update_weight_xccl")
     llm = raw_request.app.state.engine_client
-    await llm.pause_generation(wait_for_inflight_requests=False, clear_cache=True)
-    await llm.reset_mm_cache()
-    try:
-        ret_list = await llm.collective_rpc("areal_update_weight_xccl")
-    finally:
-        await llm.resume_generation()
+    # Callers pause before the first bucket and continue after the last one.
+    # Pausing per bucket would run DP dummy forwards through partial weights.
+    ret_list = await llm.collective_rpc("areal_update_weight_xccl")
     return build_response(ret_list)
 
 
@@ -348,6 +345,7 @@ async def areal_pause_generation(raw_request: Request):
 async def areal_continue_generation(raw_request: Request):
     logger.info("API server starts areal_continue_generation")
     llm = raw_request.app.state.engine_client
+    await llm.collective_rpc("areal_finish_weight_update")
     await llm.resume_generation()
     _generation_run_event.set()
     return to_json_response(True, "Generation continued")
