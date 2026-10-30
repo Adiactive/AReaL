@@ -252,7 +252,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 135
     container:
-      image: ghcr.io/hwvanici/areal_npu:a3-nightly
+      image: swr.cn-north-12.myhuaweicloud.com/ascend/areal_npu:a3-nightly
 
     env:
       AREAL_IS_IN_CI: "1"
