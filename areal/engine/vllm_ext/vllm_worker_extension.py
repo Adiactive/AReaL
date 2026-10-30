@@ -63,19 +63,6 @@ def _apply_ascend_patch_once():
 _apply_ascend_patch_once()
 
 
-def _apply_ascend_patch_awex():
-    try:
-        from areal.engine.patch_awex import patch_awex
-
-        patch_awex()
-        print("patching awex success for vllm worker process.", flush=True)
-    except ImportError:
-        print("Failed to import awex, skip patching awex.", flush=True)
-
-
-_apply_ascend_patch_awex()
-
-
 class VLLMWorkerExtension:
     """
     Iherited from vllm codebase
