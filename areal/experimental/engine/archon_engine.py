@@ -968,6 +968,7 @@ class ArchonEngine(TrainEngine):
     ) -> tuple[dict[str, Any], ArchonTrainContext]:
         inputs = dict(mb_item.padded_mb)
         inputs.pop("unit_weights", None)
+        inputs.pop("is_truncated", None)
 
         # Extract trie_node for tree training (if present)
         trie_node = inputs.pop("trie_node", None)
