@@ -1,0 +1,21 @@
+{
+  "steps": 342,
+  "step_range": [
+    1,
+    342
+  ],
+  "log_timestamp_range": [
+    "20261024-21:38:45.087",
+    "20261025-03:01:15.186"
+  ],
+  "main_log_sha256": "1c8c3946be54060659ab47b12a8ff402af7b908fc262093c86474fcb7f30e16b",
+  "config_sha256": "de41d7e4fc3410a13badf62b91402a8810d23abc6f4f9f7ce5619195769f4acd",
+  "mtp_loss": {
+    "first_20_mean": 0.7677865,
+    "last_20_mean": 0.5416614999999998
+  },
+  "acceptance_rate": {
+    "first_20_mean": 0.4274485,
+    "last_20_mean": 0.5134835
+  }
+}
