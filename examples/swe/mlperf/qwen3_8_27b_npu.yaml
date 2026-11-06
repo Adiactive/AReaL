@@ -1,0 +1,165 @@
+# Two-step integration trial; this is not the full MLPerf reference recipe.
+experiment_name: mlperf-swe-qwen3-8-27b
+trial_name: ${oc.env:AREAL_SWE_TRIAL,trial0}
+seed: 42
+total_train_steps: 2
+tokenizer_path: ${actor.path}
+
+cluster:
+  n_nodes: 1
+  n_gpus_per_node: 16
+  fileroot: ${oc.env:AREAL_SWE_OUTPUT_DIR}
+  name_resolve:
+    nfs_record_root: ${cluster.fileroot}/name_resolve
+
+scheduler:
+  type: local
+
+nemo_gym:
+  runner_url: ${oc.env:AREAL_SWE_RUNNER_URL}
+  model: ${actor.path}
+
+rollout:
+  backend: "vllm:d1p1t4"
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  setup_timeout: 1800
+  request_timeout: 7500
+  request_retries: 1
+  max_concurrent_rollouts: 1
+  consumer_batch_size: ${train_dataset.batch_size}
+  scheduling_spec: ${actor.scheduling_spec}
+  fileroot: ${cluster.fileroot}
+  tokenizer_path: ${tokenizer_path}
+  dump_to_file: true
+  agent:
+    agent_cls_path: areal.workflow.nemo_gym_swe.NeMoGymSWEAgent
+    admin_api_key: ${oc.env:AREAL_PROXY_ADMIN_KEY}
+    engine_max_tokens: ${gconfig.max_tokens}
+    session_timeout_seconds: 10800
+    tool_call_parser: qwen3_coder
+
+gconfig:
+  # PP=2 requires at least four exported sequences, including one-turn episodes.
+  n_samples: 4
+  max_new_tokens: 2048
+
+eval_gconfig:
+  n_samples: 4
+  temperature: 0.1
+  top_p: 0.95
+  max_tokens: ${gconfig.max_tokens}
+  max_new_tokens: ${gconfig.max_new_tokens}
+
+actor:
+  backend: "megatron:d1p2t4"
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  path: ${oc.env:AREAL_SWE_MODEL_PATH}
+  disable_dropout: true
+  gradient_checkpointing: true
+  mb_spec:
+    max_tokens_per_mb: ${gconfig.max_tokens}
+  optimizer:
+    lr: 5e-7
+    eps: 1e-8
+    warmup_steps_proportion: 0.0
+  mindspeed:
+    swap_optimizer: true
+    use_fused_swiglu: true
+  temperature: ${gconfig.temperature}
+  kl_ctl: 0.0
+  ppo_n_minibatches: 1
+  recompute_logprob: true
+  use_decoupled_loss: true
+  rejection_sampling:
+    action: clamp
+    upper: 2.0
+  reward_norm:
+    mean_level: group
+    std_level: group
+    group_size: ${gconfig.n_samples}
+  weight_update_mode: awex
+  megatron:
+    bridge_type: megatron-bridge
+    use_bridge_for_update_weights: true
+    freeze_vision_model: true
+    freeze_vision_projection: true
+    enable_chunked_logits: true
+    lm_head_loss_chunk_size: 1024
+  max_new_tokens: ${gconfig.max_new_tokens}
+  scheduling_spec:
+    - gpu: 1
+      cmd: python3 -m areal.infra.rpc.rpc_server
+      env_vars:
+        VLLM_USE_V1: "1"
+        TASK_QUEUE_ENABLE: "1"
+        HCCL_EXEC_TIMEOUT: "14400"
+        ACL_DEVICE_SYNC_TIMEOUT: "14400"
+        HCCL_EVENT_TIMEOUT: "14500"
+        HCCL_ASYNC_ERROR_HANDLING: "0"
+        ACL_STREAM_TIMEOUT: "14500000"
+        HCCL_CONNECT_TIMEOUT: "7200"
+        PYTORCH_NPU_ALLOC_CONF: "expandable_segments:True"
+        TORCH_COMPILE_DISABLE: "1"
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        LITELLM_LOCAL_MODEL_COST_MAP: "True"
+        HF_HUB_OFFLINE: "1"
+
+awex:
+  device_backend: npu
+  use_mindspeed: true
+  meta_server_addr: auto
+  comm_backend: hccl
+  weights_exchange_ipc_backend: cpu
+
+vllm:
+  model: ${actor.path}
+  seed: ${seed}
+  dtype: ${actor.dtype}
+  max_model_len: ${gconfig.max_tokens}
+  max_num_seqs: ${gconfig.n_samples}
+  max_num_batched_tokens: 4096
+  gpu_memory_utilization: 0.7
+  enforce_eager: true
+  disable_sliding_window: false
+  gdn_prefill_backend: triton
+
+train_dataset:
+  path: ${oc.env:AREAL_SWE_TRAIN_JSONL}
+  shuffle: false
+  pin_memory: true
+  type: rl
+
+valid_dataset:
+  path: ${oc.env:AREAL_SWE_VALID_JSONL}
+
+validation:
+  # Exercise validation in this short trial; the reference default is update 20.
+  start_step: 1
+
+saver:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+
+recover:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+
+evaluator:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+
+stats_logger:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+
+perf_tracer:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  session_tracer: {}

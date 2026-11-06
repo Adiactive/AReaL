@@ -14,7 +14,7 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 from functools import cache, partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NotRequired
 
 import uvicorn
 from anthropic.types.message import Message
@@ -22,7 +22,10 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
-from openai.types.chat.completion_create_params import CompletionCreateParams
+from openai.types.chat.completion_create_params import (
+    CompletionCreateParamsNonStreaming,
+    CompletionCreateParamsStreaming,
+)
 from openai.types.responses import Response
 from openai.types.responses.response_create_params import ResponseCreateParams
 from pydantic import BaseModel
@@ -674,6 +677,19 @@ def set_reward(
 # =============================================================================
 
 
+class _ChatCompletionNonStreaming(CompletionCreateParamsNonStreaming):
+    chat_template_kwargs: NotRequired[dict[str, Any]]
+    extra_body: NotRequired[dict[str, Any]]
+
+
+class _ChatCompletionStreaming(CompletionCreateParamsStreaming):
+    chat_template_kwargs: NotRequired[dict[str, Any]]
+    extra_body: NotRequired[dict[str, Any]]
+
+
+_ChatCompletionRequest = _ChatCompletionNonStreaming | _ChatCompletionStreaming
+
+
 async def _call_client_create(
     create_fn,
     request: dict[str, Any] | BaseModel,
@@ -726,7 +742,8 @@ async def _call_client_create(
     def _is_default_value(k: str, v: Any) -> bool:
         if isinstance(request, BaseModel):
             return v == type(request).model_fields[k].default
-        return False
+        # Chat requests are dicts; a null seed requests no sampling override.
+        return k == "seed" and v is None
 
     dropped_non_default_args = [
         (k, v)
@@ -786,7 +803,7 @@ def _openai_streaming_response(stream: AsyncGenerator[str, None]) -> StreamingRe
 
 
 async def _deferred_openai_sse_stream(
-    request: CompletionCreateParams, session: SessionData
+    request: _ChatCompletionRequest, session: SessionData
 ) -> AsyncGenerator[str, None]:
     """Keep a paused request connected until generation can start."""
     stream_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
@@ -858,7 +875,7 @@ async def _deferred_openai_sse_stream(
     response_model=None,
 )
 async def chat_completions(
-    request: CompletionCreateParams, session_id: str = Depends(_require_session_key)
+    request: _ChatCompletionRequest, session_id: str = Depends(_require_session_key)
 ) -> ChatCompletion | StreamingResponse:
     """OpenAI-compatible chat completions endpoint.
 
@@ -872,7 +889,24 @@ async def chat_completions(
             detail='Proxy server not initialized. Send requests to /create_engine then /call "initialize" first.',
         )
 
-    # CompletionCreateParams is a TypedDict (dict subclass), so use dict access.
+    # Preserve OpenAI-compatible servers' top-level template options. The Python
+    # client consumes them through extra_body; the SDK TypedDict otherwise drops them.
+    request = dict(request)
+    template_kwargs = request.pop("chat_template_kwargs", None)
+    extra_body = dict(request.get("extra_body", {}))
+    nested_template_kwargs = extra_body.get("chat_template_kwargs")
+    if nested_template_kwargs is None:
+        nested_template_kwargs = {}
+    elif not isinstance(nested_template_kwargs, dict):
+        raise HTTPException(
+            status_code=422, detail="extra_body.chat_template_kwargs must be an object"
+        )
+    if template_kwargs is not None:
+        extra_body["chat_template_kwargs"] = {
+            **nested_template_kwargs,
+            **template_kwargs,
+        }
+        request["extra_body"] = extra_body
     is_streaming = request.get("stream") is True
 
     if is_streaming:

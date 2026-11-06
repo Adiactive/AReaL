@@ -1,0 +1,15 @@
+# Site configuration, credentials, and generated runtime artifacts.
+*.env
+!runtime-pins.env
+*.yaml
+*.yml
+*.json
+*.jsonl
+*.log
+*.tar
+*.tar.gz
+*.sif
+config/
+state/
+results/
+logs/

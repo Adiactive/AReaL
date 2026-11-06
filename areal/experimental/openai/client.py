@@ -1654,8 +1654,9 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
                 if interaction is not None and cache is not None and resp_id in cache:
                     # Remove the interaction from cache on failure
                     del cache[resp_id]
-                raise ValueError(
-                    f"len of prompt tokens {len(prompt_token_ids)} exceeds engine_max_tokens {self.engine_max_tokens}"
+                raise ContextLengthExceededError(
+                    prompt_tokens=len(prompt_token_ids),
+                    max_tokens=self.engine_max_tokens,
                 )
         if not is_omitted(max_output_tokens):
             if max_new_tokens is None:
@@ -1762,7 +1763,9 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
 
         usage = ResponseUsage(
             input_tokens=len(engine_resp.input_tokens),
-            input_tokens_details=InputTokensDetails(cached_tokens=0),
+            input_tokens_details=InputTokensDetails(
+                cached_tokens=0, cache_write_tokens=0
+            ),
             output_tokens=len(engine_resp.output_tokens),
             output_tokens_details=OutputTokensDetails(
                 reasoning_tokens=reasoning_token_count

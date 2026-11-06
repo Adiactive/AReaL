@@ -87,6 +87,10 @@ def _wrap_run(agent: Any, data: dict[str, Any], extra_envs: dict[str, str]):
     return asyncio.run(agent.run(data))
 
 
+class EmptyAgentSessionError(RuntimeError):
+    """An agent session finished without any complete model interactions."""
+
+
 class OpenAIProxyWorkflow(RolloutWorkflow):
     """Run an agent through the v1 proxy.
 
@@ -315,7 +319,7 @@ class OpenAIProxyWorkflow(RolloutWorkflow):
         )
 
         if not interactions:
-            raise RuntimeError(
+            raise EmptyAgentSessionError(
                 f"Agent session for task {task_id} produced no complete interactions"
             )
 
