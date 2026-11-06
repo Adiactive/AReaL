@@ -2,6 +2,7 @@
 
 __all__ = [
     "RLVRWorkflow",
+    "NeMoGymSWEAgent",
     "MultiTurnWorkflow",
     "VisionRLVRWorkflow",
     "DomainRouterWorkflow",
@@ -10,6 +11,7 @@ __all__ = [
 ]
 
 _LAZY_IMPORTS = {
+    "NeMoGymSWEAgent": "areal.workflow.nemo_gym_swe",
     "RLVRWorkflow": "areal.workflow.rlvr",
     "MultiTurnWorkflow": "areal.workflow.multi_turn",
     "VisionRLVRWorkflow": "areal.workflow.vision_rlvr",

@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+*.sif
+*.tar
+*.tar.gz
+site.yaml
+*.env
+!runtime-pins.env
+result*.json
+state/
