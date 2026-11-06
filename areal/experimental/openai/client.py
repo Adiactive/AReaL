@@ -86,6 +86,18 @@ os.environ["OPENAI_BASE_URL"] = os.environ.get("OPENAI_BASE_URL", "none")
 logger = logging.getLogger("OpenAIClient")
 
 
+class ContextLengthExceededError(ValueError):
+    """The prompt leaves no room for generation within the context limit."""
+
+    def __init__(self, prompt_tokens: int, max_tokens: int) -> None:
+        self.prompt_tokens = prompt_tokens
+        self.max_tokens = max_tokens
+        super().__init__(
+            f"Prompt has {prompt_tokens} tokens, reaching or exceeding the context "
+            f"length limit of {max_tokens} tokens; no room remains for generation."
+        )
+
+
 def _ensure_message_dict_list(
     name: str,
     value: list[Any],
@@ -1180,8 +1192,9 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
                 ):
                     # Remove the interaction from cache on failure
                     del cache[completion_id]
-                raise ValueError(
-                    f"len of prompt tokens {len(prompt_token_ids)} exceeds max_total_tokens {max_total_tokens_final}"
+                raise ContextLengthExceededError(
+                    prompt_tokens=len(prompt_token_ids),
+                    max_tokens=max_total_tokens_final,
                 )
         if not is_omitted(max_completion_tokens):
             if max_new_tokens is None:
@@ -1625,8 +1638,9 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
                 if interaction is not None and cache is not None and resp_id in cache:
                     # Remove the interaction from cache on failure
                     del cache[resp_id]
-                raise ValueError(
-                    f"len of prompt tokens {len(prompt_token_ids)} exceeds engine_max_tokens {self.engine_max_tokens}"
+                raise ContextLengthExceededError(
+                    prompt_tokens=len(prompt_token_ids),
+                    max_tokens=self.engine_max_tokens,
                 )
         if not is_omitted(max_output_tokens):
             if max_new_tokens is None:
@@ -1732,7 +1746,9 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
 
         usage = ResponseUsage(
             input_tokens=len(engine_resp.input_tokens),
-            input_tokens_details=InputTokensDetails(cached_tokens=0),
+            input_tokens_details=InputTokensDetails(
+                cached_tokens=0, cache_write_tokens=0
+            ),
             output_tokens=len(engine_resp.output_tokens),
             output_tokens_details=OutputTokensDetails(
                 reasoning_tokens=reasoning_token_count
