@@ -4,6 +4,7 @@
 
 import argparse
 import json
+import math
 import os
 import signal
 import subprocess
@@ -66,12 +67,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--startup-timeout", type=float, default=600)
-    parser.add_argument("--episode-timeout", type=float, default=3600)
+    parser.add_argument(
+        "--episode-timeout",
+        type=float,
+        help="Override swe_runner.episode_timeout in seconds (default: 3600)",
+    )
     args = parser.parse_args()
     with args.config.open(encoding="utf-8") as source:
-        gym_url, bridge_port, concurrency, readiness_urls = service_settings(
-            json.load(source)
-        )
+        config = json.load(source)
+    gym_url, bridge_port, concurrency, readiness_urls = service_settings(config)
+    episode_timeout = args.episode_timeout
+    if episode_timeout is None:
+        episode_timeout = config.get("swe_runner", {}).get("episode_timeout", 3600)
+    if (
+        type(episode_timeout) not in (int, float)
+        or episode_timeout <= 0
+        or not math.isfinite(episode_timeout)
+    ):
+        raise ValueError("Episode timeout must be a positive finite number of seconds")
     processes = []
 
     def shutdown(signum, frame):
@@ -115,7 +128,7 @@ def main() -> None:
                     "--concurrency",
                     str(concurrency),
                     "--episode-timeout",
-                    str(args.episode_timeout),
+                    str(episode_timeout),
                 ],
                 start_new_session=True,
             )

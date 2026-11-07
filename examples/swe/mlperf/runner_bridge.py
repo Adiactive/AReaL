@@ -141,11 +141,14 @@ def create_app(
     admission_closed = False
     owned_gym_client = gym_client is None
     owned_model_client = model_client is None
+    limits = httpx.Limits(
+        max_connections=concurrency, max_keepalive_connections=concurrency
+    )
     gym_client = gym_client or httpx.AsyncClient(
-        trust_env=False, follow_redirects=False
+        trust_env=False, follow_redirects=False, limits=limits
     )
     model_client = model_client or httpx.AsyncClient(
-        trust_env=False, follow_redirects=False
+        trust_env=False, follow_redirects=False, limits=limits
     )
 
     def revoke(attempt: _Attempt) -> None:

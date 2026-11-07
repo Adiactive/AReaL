@@ -128,7 +128,10 @@ fi
 if [[ $SWE_SERVICE == standalone ]]; then
     generator_args+=(--model-base-url "$SWE_MODEL_BASE_URL" --model-name "$SWE_MODEL_NAME")
 else
-    generator_args+=(--gym-port "${SWE_GYM_PORT:-8083}")
+    generator_args+=(
+        --gym-port "${SWE_GYM_PORT:-8083}"
+        --episode-timeout "${SWE_EPISODE_TIMEOUT:-3600}"
+    )
 fi
 exec docker run --rm --pull never --network none --entrypoint python \
     --mount "type=bind,src=$script_dir/configure.py,dst=/opt/swe-runner/configure.py,readonly" \

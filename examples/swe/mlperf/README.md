@@ -206,10 +206,13 @@ on the AReaL nodes. Keep the downloaded task order with `shuffle: false`.
 
 `max_concurrent_rollouts` counts groups. Training can submit up to that limit times
 `gconfig.n_samples` episodes; validation uses `eval_gconfig.n_samples`. The bridge
-queues excess attempts. Validation requires `rollout.max_head_offpolicyness: 0`, which
-is the default, to keep each sweep on fixed weights. Nonzero asynchronous prefetch is
-rejected: training attempts could otherwise hold sandbox slots while their proxies are
-paused for evaluation.
+queues excess attempts. `rollout.max_head_offpolicyness` defaults to `0`; positive
+values are also allowed with validation. During a validation sweep, model weights remain
+fixed and training proxies stay paused. Prefetched training attempts can still hold
+sandbox slots, so provision spare runner capacity for validation and account for the
+sweep duration in training attempt timeouts. Runner and agent deadlines continue while
+training proxies are paused. Preflight reports this overlap as a warning; it does not
+reject the configuration.
 
 The example client timeout is 7200s, outer rollout request timeout is 7500s, and proxy
 inactivity timeout is 10800s. The outer timeout must exceed the client deadline plus its
@@ -217,6 +220,16 @@ cancellation allowance, with time left for trajectory export. Large queues can e
 idle proxy sessions. The bridge's started-job timeout defaults to 3600s and must cover
 the configured agent and evaluator lifetimes. These are deployment limits; they do not
 change the benchmark's turn, command, or test budgets.
+
+Set `SWE_EPISODE_TIMEOUT=10800` in `configure.env`, then run
+`bash configure.sh --env-file configure.env` (add `--force` to replace an existing
+file). This writes `swe_runner.episode_timeout` into the generated `site.yaml` (JSON
+format); the default is 3600 seconds. `serve.py` uses an explicit `--episode-timeout`
+argument first, then `swe_runner.episode_timeout`, then 3600 seconds. The effective
+value must be a positive finite number. After deploying this support, editing the
+mounted config and restarting the head service applies a new timeout without rebuilding
+the image. If the head's Ray session restarts, restart workers to rejoin it. Keep the
+value in `configure.env` when regenerating `site.yaml`.
 
 ## Qwen3.8-27B NPU integration trial
 
@@ -300,12 +313,13 @@ validation:
   start_step: 1  # Exercise validation during the two-step integration trial.
 ```
 
-Preflight requires `rollout.max_head_offpolicyness: 0`, `dynamic_bs: false`, and
-positive, equal values for `rollout.consumer_batch_size` and `train_dataset.batch_size`.
-The example already satisfies these conditions. They let training attempts drain before
-evaluation, so paused training jobs do not occupy the shared runner's sandbox slots
-during validation. Actor and rollout must also use separate scheduling: colocated
-rollout onload can resume training admission before validation.
+Preflight requires `dynamic_bs: false` and positive, equal values for
+`rollout.consumer_batch_size` and `train_dataset.batch_size`. The example already
+satisfies these conditions. With `rollout.max_head_offpolicyness: 0`, they let training
+attempts drain before evaluation. Positive values permit training prefetch and leave
+shared runner capacity and timeout budgeting to the user. Actor and rollout must also
+use separate scheduling: colocated rollout onload can resume training admission before
+validation.
 
 Keep non-greedy sampling and the validation dataset's default `shuffle: false` and
 `drop_last: false`. The token limits above inherit the selected training recipe; the

@@ -2,12 +2,14 @@
 
 import asyncio
 import json
+import socket
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from uuid import uuid4
 
 import httpx
 import pytest
+from aiohttp import web
 
 from examples.swe.mlperf import runner_bridge
 from examples.swe.mlperf.runner_bridge import create_app
@@ -73,6 +75,67 @@ async def _bridge(gym_handler, model_handler, **kwargs):
             ) as client,
         ):
             yield client
+
+
+@pytest.mark.asyncio
+async def test_concurrency_above_100_reaches_gym_and_model_without_pool_wait(ip_stack):
+    """Owned HTTP pools admit every episode and its model call concurrently."""
+    if not ip_stack["ipv4_loopback"]:
+        pytest.skip("IPv4 loopback sockets are unavailable")
+
+    concurrency = 128
+    model_calls = 0
+    all_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def model(request):
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == concurrency:
+            all_started.set()
+        await release.wait()
+        return web.json_response(_completion())
+
+    async def gym(request):
+        body = await request.json()
+        token = body["responses_create_params"]["model"]
+        response = await client.post("/v1/chat/completions", json=_chat(token))
+        assert response.status_code == 200
+        return web.json_response({"reward": 0})
+
+    upstream = web.Application()
+    upstream.router.add_post("/run", gym)
+    upstream.router.add_post("/chat/completions", model)
+    runner = web.AppRunner(upstream)
+    await runner.setup()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+        await web.SockSite(runner, sock, backlog=concurrency * 2).start()
+        app = create_app(url, concurrency=concurrency)
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://bridge"
+            ) as client,
+        ):
+            requests = [
+                asyncio.create_task(
+                    client.post("/run", headers=_headers(proxy=url), json=_row())
+                )
+                for _ in range(concurrency)
+            ]
+            try:
+                await asyncio.wait_for(all_started.wait(), timeout=5)
+                assert model_calls == concurrency
+            finally:
+                release.set()
+                results = await asyncio.wait_for(asyncio.gather(*requests), timeout=5)
+            assert all(response.status_code == 200 for response in results)
+    finally:
+        await runner.cleanup()
+        sock.close()
 
 
 @pytest.mark.asyncio

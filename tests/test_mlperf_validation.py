@@ -209,9 +209,13 @@ def test_validation_valid_target_accepted(target):
     assert MLPerfValidationConfig(target=target).target == target
 
 
-def test_validation_config_accepts_complete_small_sweep():
-    """Small smoke splits use the same complete-sweep semantics as the full split."""
-    validate_validation_config(_config(), _tasks("a", "b"))
+@pytest.mark.parametrize("max_head_offpolicyness", [0, 1, 2, 4])
+def test_validation_config_accepts_complete_small_sweep(max_head_offpolicyness):
+    """Complete sweeps allow user-selected training prefetch."""
+    config = _config()
+    config.rollout.max_head_offpolicyness = max_head_offpolicyness
+
+    validate_validation_config(config, _tasks("a", "b"))
 
 
 @pytest.mark.parametrize(
@@ -225,7 +229,6 @@ def test_validation_config_accepts_complete_small_sweep():
         ("eval_gconfig", "greedy", True),
         ("eval_gconfig", "temperature", 1.0),
         ("eval_gconfig", "top_p", 1.0),
-        ("rollout", "max_head_offpolicyness", 1),
     ],
 )
 def test_validation_config_incompatible_settings_rejected(section, name, value):
@@ -267,7 +270,7 @@ def test_validation_config_invalid_dataset_rejected(tasks):
 
 @pytest.mark.parametrize("value", [True, None, 0])
 def test_validation_rejects_dynamic_batching(value):
-    """Fixed batch consumption must drain admitted training jobs before validation."""
+    """Validation retains the fixed training batch requirement."""
     config = _config()
     config.dynamic_bs = value
 
@@ -304,7 +307,7 @@ def test_validation_rejects_incompatible_admission_batch_sizes(
 
 
 def test_validation_accepts_matching_larger_training_batch():
-    """The no-prefetch invariant supports any matching positive fixed batch size."""
+    """Matching positive fixed batch sizes are supported."""
     config = _config()
     config.rollout.consumer_batch_size = 16
     config.train_dataset.batch_size = 16

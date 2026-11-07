@@ -202,7 +202,8 @@ def test_capacity_report_warns_about_shared_runner_eval_overlap():
         "Validation configured demand: 3 groups x 1 samples" in x for x in messages
     )
     assert any("9 configured attempts" in warning for warning in warnings)
-    assert any("valid_dataset: null" in warning for warning in warnings)
+    assert any("spare runner capacity" in warning for warning in warnings)
+    assert any("budget timeouts" in warning for warning in warnings)
 
 
 def test_capacity_report_uses_consumer_batch_when_group_limit_unset():
@@ -307,16 +308,18 @@ def _enable_validation(path):
     OmegaConf.save(config, path)
 
 
+@pytest.mark.parametrize("max_head_offpolicyness", [0, 1, 2])
 @pytest.mark.parametrize("valid_sampling", [True, False])
 def test_validation_preflight_checks_protocol_without_importing_trainer(
-    tmp_path, monkeypatch, valid_sampling
+    tmp_path, monkeypatch, valid_sampling, max_head_offpolicyness
 ):
     path = _write_config(tmp_path, _task())
     _enable_validation(path)
+    config = OmegaConf.load(path)
+    config.rollout.max_head_offpolicyness = max_head_offpolicyness
     if not valid_sampling:
-        config = OmegaConf.load(path)
         config.eval_gconfig.n_samples = 1
-        OmegaConf.save(config, path)
+    OmegaConf.save(config, path)
     health_calls = []
     monkeypatch.setattr(
         train,
