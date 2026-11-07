@@ -366,6 +366,7 @@ docker run --rm --pull never --network none --entrypoint python \
   --concurrency "${SWE_CONCURRENCY:-4}" \
   --max-turns "${SWE_MAX_TURNS:-30}" \
   --agent-timeout "${SWE_AGENT_TIMEOUT:-1800}" \
+  --episode-timeout "${SWE_EPISODE_TIMEOUT:-3600}" \
   --test-timeout "${SWE_TEST_TIMEOUT:-60}" \
   --command-timeout "${SWE_COMMAND_TIMEOUT:-60}" \
   --memory-limit-mb "${SWE_MEMORY_LIMIT_MB:-32768}" \
@@ -425,6 +426,7 @@ shown:
 | `SWE_CONCURRENCY`            | `4` (`2` for the single-node test)        | Maximum active attempts across the whole cluster                                               |
 | `SWE_MAX_TURNS`              | `30`                                      | OpenHands turn limit; maps to `--max-turns`                                                    |
 | `SWE_AGENT_TIMEOUT`          | `1800`                                    | Agent timeout in seconds; maps to `--agent-timeout`                                            |
+| `SWE_EPISODE_TIMEOUT`        | `3600`                                    | AReaL bridge deadline in seconds; maps to `--episode-timeout` and `swe_runner.episode_timeout` |
 | `SWE_TEST_TIMEOUT`           | `60`                                      | Reference test timeout in seconds; maps to `--test-timeout`                                    |
 | `SWE_COMMAND_TIMEOUT`        | `60`                                      | Command timeout in seconds; maps to `--command-timeout`                                        |
 | `SWE_MEMORY_LIMIT_MB`        | `32768`                                   | Reference memory setting in MiB; maps to `--memory-limit-mb`, not a whole-attempt cgroup quota |
@@ -448,6 +450,7 @@ for a fixed-model test.
 | `--concurrency`                                          | `4`                                                                       | Maximum active attempts admitted by the head                                                                                              |
 | `--max-turns`                                            | `30`                                                                      | OpenHands agent turn limit                                                                                                                |
 | `--agent-timeout`                                        | `1800`                                                                    | Agent timeout, seconds                                                                                                                    |
+| `--episode-timeout`                                      | `3600`                                                                    | Saved AReaL bridge deadline, positive finite seconds; requires the three host launch paths                                                |
 | `--test-timeout`                                         | `60`                                                                      | Reference evaluator test timeout setting, seconds                                                                                         |
 | `--command-timeout`                                      | `60`                                                                      | Agent command timeout, seconds                                                                                                            |
 | `--memory-limit-mb`                                      | `32768`                                                                   | Reference memory setting in MiB; not a whole-attempt cgroup quota                                                                         |
@@ -490,6 +493,19 @@ service configuration. Explicit head network options must match these values. Im
 host path, and resource options can override generated launch settings. The original
 `--role standalone` launcher instead maps its chosen host `--port` to the container API
 port in the config, which defaults to `8080`.
+
+For AReaL mode, set `SWE_EPISODE_TIMEOUT=10800` in `configure.env` before running
+`configure.sh --env-file configure.env`. This saves `swe_runner.episode_timeout` in the
+generated JSON `site.yaml`; additional `--episode-timeout` arguments to `configure.sh`
+override the env-file setting. Use `--force` to replace an existing configuration. The
+value sets the bridge's Gym request deadline in seconds. An explicit
+`serve.py --episode-timeout` overrides this value; if both are absent, the default is
+3600\. The effective value must be a positive finite number. The timer starts after
+acquiring a bridge concurrency slot and includes Gym/Ray queueing, sandbox setup, agent
+execution, and evaluation. Set the AReaL client deadline higher to allow bridge
+queueing. Changes apply on service restart; follow the shutdown and worker rejoin
+procedure below. Keep the setting in `configure.env` so regeneration retains it.
+Standalone fixed-model service mode does not use the bridge timeout.
 
 For standalone mode, the wrapper passes `SWE_MODEL_BASE_URL` and `SWE_MODEL_NAME`
 through `--model-base-url` and `--model-name`; the Python generator does not read them

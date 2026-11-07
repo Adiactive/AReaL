@@ -6,9 +6,11 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
+from examples.swe.mlperf import serve
 from examples.swe.mlperf.config import AGENT_PATH, validate_proxy_config
 from examples.swe.mlperf.configure_runner import configure
 from examples.swe.mlperf.serve import service_settings
@@ -82,6 +84,91 @@ def test_runner_configuration_distributed_callbacks_keep_internal_routes_local()
         4,
         ["http://127.0.0.1:8083", "http://192.0.2.10:8082", "http://192.0.2.10:8081"],
     )
+
+
+@pytest.mark.parametrize(
+    "runner_settings,cli_timeout,expected",
+    [
+        (None, None, 3600),
+        ({}, None, 3600),
+        ({"episode_timeout": 10800}, None, 10800),
+        ({"episode_timeout": 0.5}, None, 0.5),
+        (None, "7200", 7200),
+        ({"episode_timeout": 10800}, "14400", 14400),
+    ],
+)
+def test_serve_episode_timeout_precedence_reaches_bridge(
+    tmp_path, monkeypatch, runner_settings, cli_timeout, expected
+):
+    """The actual bridge command receives the CLI, config, or legacy timeout."""
+    config = configure(_runner_config(), 8080, 8083)
+    if runner_settings is not None:
+        config["swe_runner"] = runner_settings
+    path = tmp_path / "site.yaml"
+    path.write_text(json.dumps(config))
+    argv = ["serve.py", "--config", str(path)]
+    if cli_timeout is not None:
+        argv += ["--episode-timeout", cli_timeout]
+    monkeypatch.setattr(sys, "argv", argv)
+    gym, bridge = MagicMock(), MagicMock()
+    gym.poll.side_effect = [None, 1]
+    launch = MagicMock(side_effect=[gym, bridge])
+    monkeypatch.setattr(serve.subprocess, "Popen", launch)
+    monkeypatch.setattr(serve.signal, "signal", MagicMock())
+    monkeypatch.setattr(serve.os, "killpg", MagicMock())
+    client = MagicMock()
+    client.__enter__.return_value.get.return_value.is_success = True
+    monkeypatch.setattr(serve.httpx, "Client", MagicMock(return_value=client))
+
+    with pytest.raises(RuntimeError, match="A runner service exited"):
+        serve.main()
+
+    assert launch.call_count == 2
+    command = launch.call_args_list[1].args[0]
+    assert Path(command[1]).name == "runner_bridge.py"
+    assert float(command[command.index("--episode-timeout") + 1]) == expected
+
+
+@pytest.mark.parametrize("source", ["config", "cli"])
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), -float("inf")])
+def test_serve_invalid_episode_timeout_rejected_before_launch(
+    tmp_path, monkeypatch, source, timeout
+):
+    """Invalid limits fail before Gym or the bridge can start."""
+    config = configure(_runner_config(), 8080, 8083)
+    config["swe_runner"] = {"episode_timeout": timeout if source == "config" else 10800}
+    path = tmp_path / "site.yaml"
+    path.write_text(json.dumps(config))
+    argv = ["serve.py", "--config", str(path)]
+    if source == "cli":
+        argv += [f"--episode-timeout={timeout}"]
+    monkeypatch.setattr(sys, "argv", argv)
+    launch = MagicMock()
+    monkeypatch.setattr(serve.subprocess, "Popen", launch)
+
+    with pytest.raises(ValueError, match="Episode timeout must be a positive finite"):
+        serve.main()
+
+    launch.assert_not_called()
+
+
+@pytest.mark.parametrize("timeout", [True, False, None, "10800", [], {}])
+def test_serve_nonnumeric_config_timeout_rejected_before_launch(
+    tmp_path, monkeypatch, timeout
+):
+    """Configuration values must be numbers, not coercible strings or booleans."""
+    config = configure(_runner_config(), 8080, 8083)
+    config["swe_runner"] = {"episode_timeout": timeout}
+    path = tmp_path / "site.yaml"
+    path.write_text(json.dumps(config))
+    monkeypatch.setattr(sys, "argv", ["serve.py", "--config", str(path)])
+    launch = MagicMock()
+    monkeypatch.setattr(serve.subprocess, "Popen", launch)
+
+    with pytest.raises(ValueError, match="Episode timeout must be a positive finite"):
+        serve.main()
+
+    launch.assert_not_called()
 
 
 def test_runner_configuration_explicit_ray_cluster_overrides_input():

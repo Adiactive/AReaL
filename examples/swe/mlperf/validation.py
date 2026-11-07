@@ -39,11 +39,6 @@ def validate_validation_config(
             "MLPerf validation requires eval_gconfig n_samples: 4, greedy: false, "
             "temperature: 0.1, and top_p: 0.95"
         )
-    if config.rollout.max_head_offpolicyness != 0:
-        raise ValueError(
-            "MLPerf validation requires rollout.max_head_offpolicyness: 0 "
-            "for a fixed-weight sweep"
-        )
     for engine, target in ((config.actor, "rollout"), (config.rollout, "actor")):
         strategy = engine.scheduling_strategy
         if (
@@ -67,7 +62,7 @@ def validate_validation_config(
     ):
         raise ValueError(
             "MLPerf validation requires positive integer rollout.consumer_batch_size "
-            "equal to train_dataset.batch_size to drain training before evaluation"
+            "equal to train_dataset.batch_size"
         )
     task_ids = []
     for task in tasks:

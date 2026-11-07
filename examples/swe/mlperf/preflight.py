@@ -116,7 +116,8 @@ def capacity_report(
         warnings.append(
             f"Training and validation may overlap ({sum(demands)} configured attempts). "
             "Paused training attempts can occupy shared runner slots needed by evaluation; "
-            "start with max_head_offpolicyness: 0 and valid_dataset: null."
+            "Provision spare runner capacity for validation and budget timeouts "
+            "for training attempts paused during the sweep."
         )
     messages.append(
         "These are configured demand estimates and this endpoint's admission limit, "
