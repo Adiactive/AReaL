@@ -28,6 +28,13 @@ commit `e309244f7f81ecb00da434cae98355a73fc50ff0`: NeMo-RL
 patches. Matching these sources does not make this CPU-only Docker packaging identical
 to the full GPU reference image.
 
+The build also disables Apptainer's implicit current-working-directory bind for agent
+and evaluation containers. This prevents a writable parent mount from hiding the
+explicit read-only OpenHands dependency mounts. Preflight runs from the service working
+directory and checks both dependency aliases and the writable episode subdirectories.
+Rebuild and recreate workers to apply this protection; restarting a container does not
+restore shared dependencies that an earlier task deleted.
+
 The evaluator has two Python environments inside Apptainer: its mounted Python 3.12
 harness and the task image's `/testbed/.venv`. The upstream R2E setup runs
 `uv pip install chardet` in the task environment. The build downloads the
