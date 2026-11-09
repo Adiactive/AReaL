@@ -7,7 +7,7 @@ usage() {
 Usage: bash preflight.sh /absolute/path/to/task.sif
 
 Run through start.sh --preflight FILE to supply runtime mounts and disable network.
-Checks the baked Python/harness environments, read-only SIF mount, writable scratch,
+Checks the baked Python/harness environments, read-only SIF/dependency mounts, writable scratch,
 native SIF architecture, and execution with the runner's namespace/overlay options.
 Two disposable executions check writable state and isolation between attempts.
 An explicit disposable /etc/hosts bind prevents changing the outer container's file.
@@ -105,13 +105,21 @@ marker="/mlperf-preflight-${probe_dir##*/}"
 
 # Match _build_apptainer_command in the pinned Gym SWE runner. Bind the portable
 # Python trees at their original paths, as the real harness does for its symlinks.
-apptainer_args=(exec --writable-tmpfs --cleanenv --pid --no-mount home,tmp,bind-paths
+apptainer_args=(exec --writable-tmpfs --cleanenv --pid --no-mount home,tmp,bind-paths,cwd
     --mount "type=bind,src=$probe_dir/hosts,dst=/etc/hosts"
     --mount "type=bind,src=$probe_dir,dst=/preflight-output"
+    --mount "type=bind,src=$openhands_root/OpenHands,dst=/openhands_setup/OpenHands,ro"
     --mount "type=bind,src=$openhands_root/OpenHands,dst=$openhands_root/OpenHands,ro"
+    --mount "type=bind,src=$openhands_root/miniforge3,dst=/openhands_setup/miniforge3,ro"
     --mount "type=bind,src=$openhands_root/miniforge3,dst=$openhands_root/miniforge3,ro"
     --mount "type=bind,src=$r2e_root,dst=$r2e_root,ro")
-cd /
+for directory in .eval_sessions logs evaluation/oh; do
+    apptainer_args+=(
+        --mount "type=bind,src=$openhands_root/OpenHands/$directory,dst=/openhands_setup/OpenHands/$directory"
+        --mount "type=bind,src=$openhands_root/OpenHands/$directory,dst=$openhands_root/OpenHands/$directory")
+done
+# Exercise the same parent directory that Ray workers inherit from the image.
+cd "$runner_root"
 apptainer --version
 printf '%s\n' 'Checking a disposable writable overlay and portable harness interpreters...'
 timeout --kill-after=5s 120s apptainer "${apptainer_args[@]}" "$sif_path" \
@@ -133,7 +141,23 @@ rm -rf -- "${marker}-hidden-tests"
 [[ ! -e ${marker}-hidden-tests ]]
 [[ $(cat "$marker") == 'episode-local state' ]]
 printf '127.0.0.1 localhost preflight-disposable\n' > /etc/hosts
-"$openhands_root/OpenHands/.venv/bin/python" -c 'from openhands.agenthub.nemo_gym_client import NemoGymClient'
+"$openhands_root/OpenHands/.venv/bin/python" -I -B - "$openhands_root" <<'DEPENDENCY_PROBE'
+import os
+import sys
+from pathlib import Path
+
+for root in (Path("/openhands_setup"), Path(sys.argv[1])):
+    for relative in ("OpenHands", "OpenHands/.venv", "miniforge3"):
+        path = root / relative
+        if not os.statvfs(path).f_flag & os.ST_RDONLY:
+            raise SystemExit(f"Shared dependency path is writable: {path}")
+    for relative in (".eval_sessions", "logs", "evaluation/oh"):
+        path = root / "OpenHands" / relative
+        if os.statvfs(path).f_flag & os.ST_RDONLY:
+            raise SystemExit(f"Episode directory is read-only: {path}")
+print("Shared dependency mounts: read-only; episode directories: writable")
+DEPENDENCY_PROBE
+"$openhands_root/OpenHands/.venv/bin/python" -I -B -c 'import PIL.Image; from openhands.agenthub.nemo_gym_client import NemoGymClient'
 "$r2e_root/R2E-Gym/venv/bin/python" -c 'import r2egym'
 printf 'first execution finished\n' > /preflight-output/result
 PROBE
@@ -162,5 +186,5 @@ env -u VIRTUAL_ENV -u PYTHONPATH -u PYTHONHOME uv pip install --reinstall --no-d
 env -u PYTHONPATH -u PYTHONHOME .venv/bin/python -c \
     'import chardet; assert chardet.__version__ == "5.2.0"; print("Task chardet import: OK (" + chardet.__version__ + ")")'
 PROBE
-printf '%s\n' 'Offline preflight passed: baked dependencies, SIF execution, writable overlay, fresh-attempt isolation, and task dependency installation.'
+printf '%s\n' 'Offline preflight passed: baked dependencies, read-only dependency mounts, SIF execution, writable overlay, fresh-attempt isolation, and task dependency installation.'
 printf '%s\n' 'Still required: one real task, grading, model connectivity, concurrency, and cancellation validation.'

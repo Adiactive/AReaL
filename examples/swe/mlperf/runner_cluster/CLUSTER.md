@@ -110,7 +110,8 @@ for file in \
   Dockerfile README.md ARM64.md CLUSTER.md runtime-pins.env \
   build.sh build-tls.sh install-host.sh start.sh entrypoint.sh preflight.sh \
   prepare-runtime.sh prepare-offline-wheels.sh add-apt-repository.py \
-  patch-poetry-markers.py patch-offline-eval.py configure.py configure.sh \
+  patch-poetry-markers.py patch-offline-eval.py patch-sandbox-isolation.py \
+  configure.py configure.sh \
   configure.env.example launch-config.py smoke-run.py \
   cluster-entrypoint.py check-cluster.py; do
   cp "$SWE_RUNNER_BUNDLE/$file" "$SWE_SYNC_DIR/runner/"

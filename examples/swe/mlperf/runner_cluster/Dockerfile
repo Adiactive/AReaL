@@ -84,7 +84,7 @@ RUN source /opt/swe-runner/runtime-pins.env \
     && rm -rf /tmp/uv.tar.gz "/tmp/uv-${uv_machine}-unknown-linux-gnu" \
     && uv python install "${PYTHON_VERSION}"
 
-COPY runner/prepare-runtime.sh runner/patch-poetry-markers.py runner/patch-offline-eval.py runner/prepare-offline-wheels.sh /opt/swe-runner/
+COPY runner/prepare-runtime.sh runner/patch-poetry-markers.py runner/patch-offline-eval.py runner/patch-sandbox-isolation.py runner/prepare-offline-wheels.sh /opt/swe-runner/
 RUN SWE_RUNNER_BUILD=1 GITHUB_BASE_URL="${GITHUB_BASE_URL}" \
     GITHUB_DOWNLOAD_BASE_URL="${GITHUB_DOWNLOAD_BASE_URL}" \
     UV_INDEX_URL="${PYPI_INDEX_URL}" PIP_INDEX_URL="${PYPI_INDEX_URL}" \

@@ -78,7 +78,7 @@ cp -- "$script_dir/Dockerfile" "$context_dir/Dockerfile"
 # Stage explicit source files only: never include local configs, credentials,
 # SIFs, logs, archives, or the rest of the training checkout in the build context.
 runner_files=(build-tls.sh add-apt-repository.py runtime-pins.env prepare-runtime.sh
-    patch-poetry-markers.py patch-offline-eval.py prepare-offline-wheels.sh
+    patch-poetry-markers.py patch-offline-eval.py patch-sandbox-isolation.py prepare-offline-wheels.sh
     entrypoint.sh preflight.sh configure.py smoke-run.py cluster-entrypoint.py check-cluster.py)
 for file in "${runner_files[@]}"; do
     [[ -f $script_dir/$file ]] || die "Runner bundle is incomplete: missing $file"

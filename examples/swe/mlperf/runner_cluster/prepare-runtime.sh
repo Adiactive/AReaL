@@ -114,6 +114,7 @@ checkout_pinned NVIDIA-NeMo/Gym "${NEMO_GYM_REVISION}" "${gym_dir}"
 apply_patches "${gym_dir}" "${reference_dir}/docker/mlperf/patches/gym"
 
 # Apply before building the Gym wheel so packaged and source modules agree.
+python3 "${script_dir}/patch-sandbox-isolation.py" "${swe_dir}/app.py"
 offline_wheel_dir=${script_dir}/offline-wheels
 bash "${script_dir}/prepare-offline-wheels.sh" "${offline_wheel_dir}"
 cp "${offline_wheel_dir}/SHA256SUMS" "${provenance_dir}/offline-wheels.sha256"
