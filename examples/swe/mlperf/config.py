@@ -3,7 +3,15 @@
 import math
 from dataclasses import dataclass, field
 
-from areal.api.cli_args import PPOConfig
+from areal.api.cli_args import (
+    BaseExperimentConfig,
+    EvaluatorConfig,
+    GenerationHyperparameters,
+    InferenceEngineConfig,
+    PPOConfig,
+    RecoverConfig,
+    SaverConfig,
+)
 
 AGENT_PATH = "areal.workflow.nemo_gym_swe.NeMoGymSWEAgent"
 
@@ -51,9 +59,31 @@ class MLPerfSWEConfig(PPOConfig):
     validation: MLPerfValidationConfig = field(default_factory=MLPerfValidationConfig)
 
 
-def validate_proxy_config(config: MLPerfSWEConfig) -> None:
+@dataclass
+class MLPerfSWEEvalConfig(BaseExperimentConfig):
+    """Evaluate an exported checkpoint without constructing training engines."""
+
+    saver: SaverConfig | None = None
+    evaluator: EvaluatorConfig | None = None
+    recover: RecoverConfig | None = None
+
+    rollout: InferenceEngineConfig = field(default_factory=InferenceEngineConfig)
+    eval_gconfig: GenerationHyperparameters = field(
+        default_factory=lambda: GenerationHyperparameters(
+            n_samples=4, temperature=0.1, top_p=0.95
+        )
+    )
+    nemo_gym: NeMoGymConfig = field(default_factory=NeMoGymConfig)
+    validation: MLPerfValidationConfig = field(default_factory=MLPerfValidationConfig)
+
+
+def validate_proxy_config(
+    config: MLPerfSWEConfig | MLPerfSWEEvalConfig, *, evaluation_only: bool = False
+) -> None:
     """Require the proxy path and supported multi-turn export semantics."""
-    if config.rollout._version != "v1" or config.actor._version != "v1":
+    if config.rollout._version != "v1" or (
+        not evaluation_only and config.actor._version != "v1"
+    ):
         raise ValueError("MLPerf SWE currently requires actor/rollout _version: v1")
     agent = config.rollout.agent
     if agent is None or agent.agent_cls_path != AGENT_PATH:
@@ -90,6 +120,8 @@ def validate_proxy_config(config: MLPerfSWEConfig) -> None:
             "Proxy session timeout must exceed the runner request timeout "
             "plus cancellation timeout"
         )
+    if evaluation_only:
+        return
     if config.train_dataset.shuffle:
         raise ValueError("MLPerf SWE requires train_dataset.shuffle: false")
     adv_norm = config.actor.adv_norm

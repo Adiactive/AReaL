@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validate and summarize complete four-attempt SWE validation sweeps."""
 
+import copy
+from collections.abc import Callable
 from typing import Any
 
 import torch
 
-from examples.swe.mlperf.config import MLPerfSWEConfig
+from examples.swe.mlperf.config import MLPerfSWEConfig, MLPerfSWEEvalConfig
+
+from areal.api.cli_args import GenerationHyperparameters
+from areal.infra.rpc.rtensor import RTensor
 
 _INTEGER_DTYPES = {torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64}
 _FIELDS = (
@@ -18,7 +23,10 @@ _FIELDS = (
 
 
 def validate_validation_config(
-    config: MLPerfSWEConfig, tasks: list[dict[str, Any]]
+    config: MLPerfSWEConfig | MLPerfSWEEvalConfig,
+    tasks: list[dict[str, Any]],
+    *,
+    evaluation_only: bool = False,
 ) -> None:
     """Require the reference sampling settings and an unfiltered fixed-weight sweep."""
     if config.valid_dataset is None:
@@ -39,31 +47,32 @@ def validate_validation_config(
             "MLPerf validation requires eval_gconfig n_samples: 4, greedy: false, "
             "temperature: 0.1, and top_p: 0.95"
         )
-    for engine, target in ((config.actor, "rollout"), (config.rollout, "actor")):
-        strategy = engine.scheduling_strategy
+    if not evaluation_only:
+        for engine, target in ((config.actor, "rollout"), (config.rollout, "actor")):
+            strategy = engine.scheduling_strategy
+            if (
+                strategy is not None
+                and strategy.type == "colocation"
+                and strategy.target == target
+            ):
+                raise ValueError(
+                    "MLPerf validation requires separate actor and rollout scheduling"
+                )
+        if config.dynamic_bs is not False:
+            raise ValueError("MLPerf validation requires dynamic_bs: false")
+        batch_size = config.train_dataset.batch_size
+        consumer_batch_size = config.rollout.consumer_batch_size
         if (
-            strategy is not None
-            and strategy.type == "colocation"
-            and strategy.target == target
+            type(batch_size) is not int
+            or batch_size < 1
+            or type(consumer_batch_size) is not int
+            or consumer_batch_size < 1
+            or consumer_batch_size != batch_size
         ):
             raise ValueError(
-                "MLPerf validation requires separate actor and rollout scheduling"
+                "MLPerf validation requires positive integer rollout.consumer_batch_size "
+                "equal to train_dataset.batch_size"
             )
-    if config.dynamic_bs is not False:
-        raise ValueError("MLPerf validation requires dynamic_bs: false")
-    batch_size = config.train_dataset.batch_size
-    consumer_batch_size = config.rollout.consumer_batch_size
-    if (
-        type(batch_size) is not int
-        or batch_size < 1
-        or type(consumer_batch_size) is not int
-        or consumer_batch_size < 1
-        or consumer_batch_size != batch_size
-    ):
-        raise ValueError(
-            "MLPerf validation requires positive integer rollout.consumer_batch_size "
-            "equal to train_dataset.batch_size"
-        )
     task_ids = []
     for task in tasks:
         params = task.get("responses_create_params") if isinstance(task, dict) else None
@@ -184,3 +193,37 @@ def summarize_validation(
             attempts, key=lambda row: (row["task_index"], row["sample_index"])
         ),
     }
+
+
+def run_validation_sweep(
+    rollout: Any,
+    tasks: list[dict[str, Any]],
+    generation: GenerationHyperparameters,
+    workflow: Any,
+    workflow_kwargs: dict[str, Any],
+    clear_batches: Callable[..., None],
+) -> dict[str, Any]:
+    """Use the same complete sweep and scoring for training and standalone eval."""
+    from examples.swe.mlperf.workflow import VALIDATION_TASK_INDEX
+
+    task_ids = [
+        task["responses_create_params"]["metadata"]["instance_id"] for task in tasks
+    ]
+    groups = []
+    try:
+        for task_index, task in enumerate(tasks):
+            task = copy.deepcopy(task)
+            task[VALIDATION_TASK_INDEX] = task_index
+            params = task["responses_create_params"]
+            params["temperature"] = generation.temperature
+            params["top_p"] = generation.top_p
+            params["max_output_tokens"] = min(
+                params.get("max_output_tokens") or generation.max_new_tokens,
+                generation.max_new_tokens,
+            )
+            rollout.submit(task, workflow, workflow_kwargs, group_size=4, is_eval=True)
+        groups = rollout.wait(len(tasks), timeout=None)
+        return summarize_validation(RTensor.localize(groups), task_ids)
+    finally:
+        if groups:
+            clear_batches(*groups)

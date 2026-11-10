@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from examples.swe.mlperf.config import MLPerfSWEConfig
+from examples.swe.mlperf.config import MLPerfSWEConfig, MLPerfSWEEvalConfig
 
 from areal.api.cli_args import GenerationHyperparameters
 from areal.workflow.nemo_gym_swe import NeMoGymSWEAgent, _validate_url
@@ -58,7 +58,7 @@ def check_runner_health(
 
 
 def prepare_workflow(
-    config: MLPerfSWEConfig,
+    config: MLPerfSWEConfig | MLPerfSWEEvalConfig,
     generation: GenerationHyperparameters,
     tasks: list[dict[str, Any]],
     *,

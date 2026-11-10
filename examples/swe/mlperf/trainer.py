@@ -9,13 +9,11 @@ from typing import Any
 
 from examples.swe.mlperf.config import MLPerfSWEConfig
 from examples.swe.mlperf.validation import (
-    summarize_validation,
+    run_validation_sweep,
     validate_validation_config,
 )
-from examples.swe.mlperf.workflow import VALIDATION_TASK_INDEX
 
 from areal.api.cli_args import InferenceEngineConfig
-from areal.infra.rpc.rtensor import RTensor
 from areal.trainer.rl_trainer import PPOTrainer, is_single_controller
 from areal.utils import logging
 from areal.utils.stats_logger import StatsLogger
@@ -115,35 +113,15 @@ class MLPerfSWETrainer(PPOTrainer):
 
         tasks = [task for batch in self.valid_dataloader for task in batch]
         validate_validation_config(self.config, tasks)
-        task_ids = [
-            task["responses_create_params"]["metadata"]["instance_id"] for task in tasks
-        ]
         started = time.monotonic()
-        groups = []
-        try:
-            for task_index, task in enumerate(tasks):
-                task = copy.deepcopy(task)
-                task[VALIDATION_TASK_INDEX] = task_index
-                params = task["responses_create_params"]
-                generation = self.config.eval_gconfig
-                params["temperature"] = generation.temperature
-                params["top_p"] = generation.top_p
-                params["max_output_tokens"] = min(
-                    params.get("max_output_tokens") or generation.max_new_tokens,
-                    generation.max_new_tokens,
-                )
-                self.eval_rollout.submit(
-                    task,
-                    eval_workflow,
-                    eval_workflow_kwargs,
-                    group_size=4,
-                    is_eval=True,
-                )
-            groups = self.eval_rollout.wait(len(tasks), timeout=None)
-            summary = summarize_validation(RTensor.localize(groups), task_ids)
-        finally:
-            if groups:
-                self.actor.clear_batches(*groups)
+        summary = run_validation_sweep(
+            self.eval_rollout,
+            tasks,
+            self.config.eval_gconfig,
+            eval_workflow,
+            eval_workflow_kwargs,
+            self.actor.clear_batches,
+        )
 
         target = self.config.validation.target
         reached = target is not None and summary["pass_at_4"] >= target
