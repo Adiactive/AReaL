@@ -1,0 +1,67 @@
+# One complete validation sweep of a full Hugging Face checkpoint; no actor.
+experiment_name: mlperf-swe-qwen3-8-27b-eval
+trial_name: ${oc.env:AREAL_SWE_TRIAL,checkpoint0}
+seed: 42
+tokenizer_path: ${vllm.model}
+
+cluster:
+  n_nodes: 1
+  n_gpus_per_node: 4
+  fileroot: ${oc.env:AREAL_SWE_OUTPUT_DIR}
+  name_resolve:
+    nfs_record_root: ${cluster.fileroot}/name_resolve
+
+scheduler:
+  type: local
+
+nemo_gym:
+  runner_url: ${oc.env:AREAL_SWE_RUNNER_URL}
+  model: ${vllm.model}
+
+rollout:
+  backend: "vllm:d1p1t4"
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  tokenizer_path: ${tokenizer_path}
+  setup_timeout: 1800
+  request_timeout: 7500
+  request_retries: 1
+  max_concurrent_rollouts: 1
+  agent:
+    agent_cls_path: areal.workflow.nemo_gym_swe.NeMoGymSWEAgent
+    admin_api_key: ${oc.env:AREAL_PROXY_ADMIN_KEY}
+    engine_max_tokens: ${eval_gconfig.max_tokens}
+    session_timeout_seconds: 10800
+    tool_call_parser: qwen3_coder
+  scheduling_spec:
+    - gpu: 1
+      cmd: python3 -m areal.infra.rpc.rpc_server
+      env_vars:
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        LITELLM_LOCAL_MODEL_COST_MAP: "True"
+        HF_HUB_OFFLINE: "1"
+
+eval_gconfig:
+  max_tokens: 32768
+  max_new_tokens: 2048
+
+vllm:
+  model: ${oc.env:AREAL_SWE_MODEL_PATH}
+  seed: ${seed}
+  dtype: bfloat16
+  max_model_len: ${eval_gconfig.max_tokens}
+  max_num_seqs: 4
+  max_num_batched_tokens: 4096
+  gpu_memory_utilization: 0.7
+  enforce_eager: true
+  disable_sliding_window: false
+  gdn_prefill_backend: triton
+
+valid_dataset:
+  path: ${oc.env:AREAL_SWE_VALID_JSONL}
+
+stats_logger:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}

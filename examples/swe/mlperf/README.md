@@ -291,6 +291,84 @@ fresh trial name for each run. Logs and rollout records use `AREAL_SWE_OUTPUT_DI
 completed update with all-equal group rewards does not establish a useful policy
 gradient; inspect rewards and exported trajectories.
 
+## Evaluate an exported checkpoint without training
+
+[eval.py](eval.py) starts only vLLM inference servers and AReaL rollout/proxy workers.
+It uses the same `MLPerfSWEWorkflow`, complete four-attempt sweep, failure handling, and
+metric aggregation as validation during training. No actor, optimizer, reference model,
+training dataset, or weight synchronization is started.
+
+Use [qwen3_8_27b_eval_npu.yaml](qwen3_8_27b_eval_npu.yaml) for a single-node, four-NPU
+Qwen3.8-27B evaluation. Supply a full Hugging Face checkpoint (or a merged checkpoint),
+including the tokenizer files. Raw Megatron distributed checkpoints must be exported
+first. The runtime must already support this model with vLLM Ascend.
+
+```bash
+export AREAL_SWE_MODEL_PATH=/path/to/exported/checkpoint
+export AREAL_SWE_VALID_JSONL=/path/to/validation.jsonl
+export AREAL_SWE_OUTPUT_DIR=/path/to/evaluation-output
+export AREAL_SWE_RUNNER_URL=http://runner-host:8080
+export AREAL_SWE_TRIAL=checkpoint0
+# Set AREAL_PROXY_ADMIN_KEY in the environment, as for training.
+
+python examples/swe/mlperf/eval.py \
+  --config examples/swe/mlperf/qwen3_8_27b_eval_npu.yaml --check-only
+
+python examples/swe/mlperf/eval.py \
+  --config examples/swe/mlperf/qwen3_8_27b_eval_npu.yaml
+```
+
+Run directly in the AReaL runtime container; do not use the SPMD training launcher.
+`--check-only` validates configuration, JSONL tasks, and runner health without loading
+the model, starting workers, or submitting sandbox attempts. It does not verify
+checkpoint loadability or model callbacks.
+
+Each invocation evaluates one checkpoint once. Repeat with a different
+`AREAL_SWE_MODEL_PATH` and a unique `AREAL_SWE_TRIAL` for each checkpoint. The
+checkpoint must remain unchanged during its sweep. Existing standalone fixed-model
+runner services are not needed: this entrypoint uses the same AReaL bridge as training.
+
+The example inherits four samples, temperature `0.1`, and top-p `0.95` from the
+standalone config defaults. Its 2048-token generation limit matches the short training
+example; adjust `eval_gconfig` to match the checkpoints' intended evaluation recipe.
+`rollout.max_concurrent_rollouts` controls concurrent task groups (four attempts each).
+Standalone evaluation removes optimizer-version admission limits internally; there is no
+training proxy to pause, although other jobs can still occupy shared runner slots.
+
+Results go to `validation/checkpoint.json` under the trial's log directory, including
+checkpoint identity, per-attempt results, pass@1, pass@4, and failed-attempt counts.
+`validation/status.json` records completion, target status, or an aborted sweep.
+`validation.target` retains its usual meaning; `validation.start_step`,
+`validation.interval`, and `evaluator.*` do not schedule standalone runs. A sweep
+missing task results fails instead of reporting a partial score. Inference and proxy
+workers are shut down when evaluation finishes or fails.
+
+Standalone evaluation also supports `stats_logger.swanlab`. Add this to the evaluation
+YAML (merge it into the existing `stats_logger` section):
+
+```yaml
+stats_logger:
+  swanlab:
+    mode: offline
+    project: mlperf-swe-eval
+    name: ${trial_name}
+```
+
+`offline` stores SwanLab data locally without login or uploads; `local` is also
+supported. Use `cloud` with your configured SwanLab service and supply credentials via
+`SWANLAB_API_KEY` or `stats_logger.swanlab.api_key` when needed. `logdir` overrides the
+default trial log directory. The default mode is `disabled`, and `--check-only` never
+starts a tracking run.
+
+One completed sweep logs final scalar metrics at step zero under `mlperf_validation/`,
+including `pass_at_1`, `pass_at_4`, `pass_all_4`, task/attempt counts, failed attempts,
+duration, and target status. Aborted sweeps log an aborted flag and duration without
+partial scores. These are final sweep metrics, not per-attempt progress updates. Each
+run records checkpoint and sampling metadata without copying the full experiment
+configuration or per-attempt contents. Hardware monitoring and console capture are
+disabled for this controller-only logger. Tracking errors are logged without replacing
+local JSON results or masking evaluation failures.
+
 ## Benchmark validation
 
 The example YAML enables validation with the fields below. Set `AREAL_SWE_VALID_JSONL`

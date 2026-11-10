@@ -1,0 +1,88 @@
+# Evaluation only: 4 nodes x 16 NPUs; 16 vLLM replicas with TP=4.
+# Set AREAL_SWE_MODEL_PATH to an exported HF checkpoint and use a unique trial.
+# Run with examples/swe/mlperf/eval.py, not the training launcher.
+experiment_name: mlperf-swe-qwen3-6-35b-eval
+trial_name: ${oc.env:AREAL_SWE_TRIAL,checkpoint0}
+seed: 42
+tokenizer_path: ${vllm.model}
+cluster:
+  n_nodes: 4
+  n_gpus_per_node: 16
+  fileroot: ${oc.env:AREAL_SWE_OUTPUT_DIR}
+  name_resolve:
+    type: ray
+    ray_actor_name: ray_kv_store
+scheduler:
+  type: ray
+nemo_gym:
+  runner_url: ${oc.env:AREAL_SWE_RUNNER_URL}
+  model: ${vllm.model}
+  request_timeout_seconds: 7200
+rollout:
+  backend: vllm:d16p1t4
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  setup_timeout: 1800
+  request_timeout: 20000.0
+  request_retries: 3
+  max_concurrent_rollouts: 32
+  consumer_batch_size: 16
+  scheduling_spec:
+  - task_type: worker
+    port_count: 2
+    gpu: 1
+    mem: 32
+    cmd: python3 -m areal.infra.rpc.rpc_server
+    env_vars:
+      HCCL_SOCKET_IFNAME: ${oc.env:AREAL_HCCL_SOCKET_IFNAME}
+      TASK_QUEUE_ENABLE: '1'
+      HCCL_EXEC_TIMEOUT: '14400'
+      ACL_DEVICE_SYNC_TIMEOUT: '14400'
+      HCCL_EVENT_TIMEOUT: '14500'
+      HCCL_ASYNC_ERROR_HANDLING: '0'
+      ACL_STREAM_TIMEOUT: '14500000'
+      HCCL_CONNECT_TIMEOUT: '7200'
+      PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
+      HCCL_BUFFSIZE: '400'
+  fileroot: ${cluster.fileroot}
+  tokenizer_path: ${tokenizer_path}
+  agent:
+    agent_cls_path: areal.workflow.nemo_gym_swe.NeMoGymSWEAgent
+    admin_api_key: ${oc.env:AREAL_PROXY_ADMIN_KEY}
+    engine_max_tokens: ${eval_gconfig.max_tokens}
+    session_timeout_seconds: 9600
+    tool_call_parser: qwen3_coder
+eval_gconfig:
+  n_samples: 4
+  temperature: 0.1
+  top_p: 0.95
+  max_tokens: 65536
+  max_new_tokens: 65536
+vllm:
+  model: ${oc.env:AREAL_SWE_MODEL_PATH}
+  seed: ${seed}
+  dtype: bfloat16
+  max_model_len: ${eval_gconfig.max_tokens}
+  max_num_seqs: 20
+  max_num_batched_tokens: 16384
+  gpu_memory_utilization: 0.7
+  enforce_eager: false
+  disable_sliding_window: false
+  no_enable_prefix_caching: false
+  compilation_config:
+    cudagraph_capture_sizes:
+    - 1
+    - 2
+    - 4
+    - 8
+    - 16
+    cudagraph_mode: FULL_DECODE_ONLY
+  additional_config:
+    enable_cpu_binding: true
+    multistream_overlap_shared_expert: true
+valid_dataset:
+  path: ${oc.env:AREAL_SWE_VALID_JSONL}
+stats_logger:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
