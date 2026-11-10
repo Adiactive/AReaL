@@ -78,6 +78,102 @@ async def _bridge(gym_handler, model_handler, **kwargs):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "upstream_error", "caller_cancel"])
+async def test_disconnect_monitor_swallowed_cancellation_does_not_block_cleanup(
+    monkeypatch, outcome
+):
+    """A swallowed disconnect poll cancellation must not hold the caller open."""
+    polling = asyncio.Event()
+    gym_started = asyncio.Event()
+    swallowed = asyncio.Event()
+    release_gym = asyncio.Event()
+    monitor = None
+
+    async def is_disconnected(request):
+        nonlocal monitor
+        monitor = asyncio.current_task()
+        if not polling.is_set():
+            polling.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # Model Starlette/AnyIO consuming cancellation inside its poll.
+                swallowed.set()
+        return False
+
+    monkeypatch.setattr(runner_bridge.Request, "is_disconnected", is_disconnected)
+
+    async def gym(request):
+        gym_started.set()
+        await polling.wait()
+        if outcome == "caller_cancel":
+            await release_gym.wait()
+        status = 500 if outcome == "upstream_error" else 200
+        return httpx.Response(status, json={"reward": 1})
+
+    async with _bridge(gym, lambda _: httpx.Response(200)) as client:
+        pending = asyncio.create_task(
+            client.post("/run", headers=_headers(), json=_row())
+        )
+        try:
+            await asyncio.wait_for(polling.wait(), 2)
+            await asyncio.wait_for(gym_started.wait(), 2)
+            if outcome == "caller_cancel":
+                pending.cancel()
+            await asyncio.wait_for(swallowed.wait(), 2)
+            done, _ = await asyncio.wait({pending}, timeout=1)
+            assert pending in done, "Disconnect cleanup blocked the HTTP handler"
+            assert monitor.done()
+            if outcome == "caller_cancel":
+                assert pending.cancelled()
+                assert (await client.get("/health")).json()["active_attempts"] == 1
+            else:
+                response = pending.result()
+                assert response.status_code == (
+                    503 if outcome == "upstream_error" else 200
+                )
+                if outcome == "success":
+                    assert response.json() == {"reward": 1}
+                assert (await client.get("/health")).json()["active_attempts"] == 0
+        finally:
+            release_gym.set()
+            if monitor is not None and not monitor.done():
+                monitor.cancel()
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+            if monitor is not None:
+                await asyncio.gather(monitor, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_caller_disconnect_returns_499_and_keeps_gym_job_draining(monkeypatch):
+    """Stopping a disconnected caller still retains its running sandbox slot."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gym(request):
+        started.set()
+        await release.wait()
+        return httpx.Response(200, json={"reward": 1})
+
+    async def is_disconnected(request):
+        await started.wait()
+        return True
+
+    monkeypatch.setattr(runner_bridge.Request, "is_disconnected", is_disconnected)
+    async with _bridge(gym, lambda _: httpx.Response(200)) as client:
+        try:
+            response = await asyncio.wait_for(
+                client.post("/run", headers=_headers(), json=_row()), 2
+            )
+            assert response.status_code == 499
+            assert (await client.get("/health")).json()["active_attempts"] == 1
+        finally:
+            release.set()
+
+
+@pytest.mark.asyncio
 async def test_concurrency_above_100_reaches_gym_and_model_without_pool_wait(ip_stack):
     """Owned HTTP pools admit every episode and its model call concurrently."""
     if not ip_stack["ipv4_loopback"]:

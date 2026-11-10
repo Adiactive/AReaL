@@ -308,8 +308,12 @@ def create_app(
         jobs.add(job)
         job.add_done_callback(jobs.discard)
 
+        stop_disconnect = asyncio.Event()
+
         async def wait_for_disconnect() -> None:
-            while not await request.is_disconnected():
+            while not stop_disconnect.is_set():
+                if await request.is_disconnected():
+                    return
                 await asyncio.sleep(0.1)
 
         disconnect = asyncio.create_task(wait_for_disconnect())
@@ -325,6 +329,8 @@ def create_app(
             cancel(attempt)
             raise
         finally:
+            # Starlette's disconnect poll can swallow task cancellation.
+            stop_disconnect.set()
             disconnect.cancel()
             with suppress(asyncio.CancelledError):
                 await disconnect
