@@ -11,11 +11,14 @@ import argparse
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import math
+from collections import Counter
 from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
+from time import monotonic
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -30,6 +33,7 @@ logger = logging.getLogger("MLPerfRunnerBridge")
 @dataclass
 class _Attempt:
     attempt_id: str
+    received_at: float
     token: str
     proxy_url: str
     model: str
@@ -38,9 +42,62 @@ class _Attempt:
     key_digest: bytes = field(repr=False)
     cancelled: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     model_requests: set[asyncio.Task] = field(default_factory=set, repr=False)
+    first_callback_seen: bool = False
     started: bool = False
     active: bool = True
+    invalid_callback: bool = False
     failed: bool = False
+
+
+class _Metrics:
+    def __init__(self) -> None:
+        self.attempts = 0
+        self.finished_without_callback = 0
+        self.sandbox_failures = 0
+        self.unknown_outcomes = 0
+        self.seconds: Counter[int] = Counter()
+        self.minimum = math.inf
+        self.maximum = 0.0
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "attempts": self.attempts,
+            "sandbox_failures": self.sandbox_failures,
+            "finished_without_callback": self.finished_without_callback,
+            "unknown_outcomes": self.unknown_outcomes,
+            "first_llm_request_seconds": self.latency(),
+        }
+
+    def observe(self, seconds: float) -> None:
+        self.minimum = min(self.minimum, seconds)
+        self.maximum = max(self.maximum, seconds)
+        self.seconds[math.ceil(seconds)] += 1
+
+    def latency(self) -> dict[str, Any]:
+        count = self.seconds.total()
+        # Nearest-rank quantiles, rounded up to the one-second bucket edge.
+        ranks = {
+            name: math.ceil(count * q) for name, q in (("p50", 0.5), ("p99", 0.99))
+        }
+        quantiles = dict.fromkeys(ranks)
+        cumulative = 0
+        for upper, size in sorted(self.seconds.items()):
+            cumulative += size
+            for name, rank in ranks.items():
+                if quantiles[name] is None and cumulative >= rank:
+                    quantiles[name] = min(upper, self.maximum)
+        return {
+            "count": count,
+            "min": self.minimum if count else None,
+            "max": self.maximum if count else None,
+            **quantiles,
+            "cumulative_buckets": {
+                str(limit): sum(
+                    n for upper, n in self.seconds.items() if upper <= limit
+                )
+                for limit in (5, 15, 30, 60, 120, 300)
+            },
+        }
 
 
 def _error(status: int, message: str) -> JSONResponse:
@@ -126,6 +183,7 @@ def create_app(
     *,
     concurrency: int = 4,
     episode_timeout: float = 3600,
+    metrics_idle_reset_seconds: float = 900,
     gym_client: httpx.AsyncClient | None = None,
     model_client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
@@ -133,6 +191,25 @@ def create_app(
     gym_url = _root_url(gym_url)
     if concurrency < 1 or episode_timeout <= 0 or not math.isfinite(episode_timeout):
         raise ValueError("Concurrency and episode timeout must be positive")
+
+    if not math.isfinite(metrics_idle_reset_seconds) or metrics_idle_reset_seconds <= 0:
+        raise ValueError("Metrics idle reset seconds must be positive and finite")
+    window = _Metrics()
+    total = _Metrics()
+    idle_since = None
+
+    def window_snapshot() -> dict[str, Any]:
+        return {"idle_reset_seconds": metrics_idle_reset_seconds, **window.snapshot()}
+
+    def expire_idle_window() -> None:
+        nonlocal window, idle_since
+        if (
+            idle_since is not None
+            and monotonic() - idle_since >= metrics_idle_reset_seconds
+        ):
+            logger.info("metrics_window_reset %s", json.dumps(window_snapshot()))
+            window = _Metrics()
+            idle_since = None
 
     attempts: dict[str, _Attempt] = {}
     routes: dict[str, _Attempt] = {}
@@ -198,13 +275,16 @@ def create_app(
                 slots.release()
 
     async def execute(attempt: _Attempt, body: dict[str, Any]) -> JSONResponse:
-        nonlocal admission_closed
+        nonlocal admission_closed, idle_since
         acquired = False
+        sandbox_failure = False
+        unknown = False
         try:
             acquired = await acquire_slot(attempt)
             if not acquired:
                 return _error(409, "Attempt cancelled")
             if admission_closed:
+                unknown = True
                 return _error(
                     503, "Admission closed: reconcile sandbox jobs and restart"
                 )
@@ -217,51 +297,89 @@ def create_app(
                     timeout=episode_timeout,
                 )
             except (TimeoutError, httpx.HTTPError):
+                sandbox_failure = True
+                unknown = True
                 admission_closed = True
                 return _error(503, "Gym job state is unknown; admission closed")
             if response.status_code >= 500:
+                sandbox_failure = True
                 admission_closed = True
                 return _error(503, "Gym job state is unknown; admission closed")
             if attempt.cancelled.is_set():
                 return _error(409, "Attempt cancelled")
-            if attempt.failed:
+            if attempt.failed or attempt.invalid_callback:
+                sandbox_failure = attempt.invalid_callback
                 return _error(502, "Episode model request failed")
             if not response.is_success:
+                unknown = True
                 return _error(502, "Gym episode request failed")
             try:
                 result = response.json()
             except ValueError:
+                sandbox_failure = True
                 return _error(502, "Gym returned an invalid episode result")
             if not isinstance(result, dict):
+                sandbox_failure = True
                 return _error(502, "Gym returned an invalid episode result")
+            trajectory = result.get("response")
+            resolved = result.get("resolved")
+            reward = result.get("reward")
+            sandbox_failure = (
+                type(resolved) is not bool
+                or type(reward) not in (int, float)
+                or reward != resolved
+                or not isinstance(trajectory, dict)
+                or not isinstance(trajectory.get("output"), list)
+                or not trajectory["output"]
+                or trajectory.get("status") not in (None, "completed")
+                or bool(trajectory.get("error"))
+            )
             return JSONResponse(result)
         except asyncio.CancelledError:
+            unknown = True
             if attempt.started:
                 admission_closed = True
             raise
         except Exception:
+            unknown = True
             admission_closed = True
             return _error(503, "Bridge job state is unknown; admission closed")
         finally:
             revoke(attempt)
             attempts.pop(attempt.attempt_id, None)
+            for metrics in (window, total):
+                if not attempt.cancelled.is_set() and not attempt.failed:
+                    if sandbox_failure:
+                        metrics.sandbox_failures += 1
+                        if not attempt.first_callback_seen:
+                            metrics.finished_without_callback += 1
+                    if unknown:
+                        metrics.unknown_outcomes += 1
+            if not attempts:
+                idle_since = monotonic()
             if acquired:
                 slots.release()
 
     @app.get("/health")
     async def health() -> JSONResponse:
+        expire_idle_window()
         return JSONResponse(
             {
                 "status": "unavailable" if admission_closed else "ok",
                 "active_attempts": sum(a.started for a in attempts.values()),
                 "queued_attempts": sum(not a.started for a in attempts.values()),
                 "concurrency": concurrency,
+                "total_attempts": total.attempts,
+                "total": total.snapshot(),
+                "window": window_snapshot(),
             },
             status_code=503 if admission_closed else 200,
         )
 
     @app.post("/run")
     async def run(request: Request) -> JSONResponse:
+        nonlocal idle_since
+        received_at = monotonic()
         if admission_closed:
             return _error(503, "Admission closed: reconcile sandbox jobs and restart")
         key = _bearer(request)
@@ -293,6 +411,7 @@ def create_app(
             return _error(409, "Attempt already registered")
         attempt = _Attempt(
             attempt_id=attempt_id,
+            received_at=received_at,
             token=f"areal-{uuid4()}",
             proxy_url=proxy_url,
             model=params["model"],
@@ -302,6 +421,10 @@ def create_app(
         )
         forwarded = deepcopy(body)
         forwarded["responses_create_params"]["model"] = attempt.token
+        expire_idle_window()
+        idle_since = None
+        total.attempts += 1
+        window.attempts += 1
         attempts[attempt_id] = attempt
         routes[attempt.token] = attempt
         job = asyncio.create_task(execute(attempt, forwarded))
@@ -359,13 +482,14 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> JSONResponse:
+        callback_received_at = monotonic()
         body = await _body(request)
         token = body.get("model")
         attempt = routes.get(token) if isinstance(token, str) else None
         if attempt is None or not attempt.active or not attempt.started:
             return _error(404, "Unknown or expired model route")
         if body.get("stream", False) is not False or body.get("n", 1) != 1:
-            attempt.failed = True
+            attempt.invalid_callback = True
             return _error(400, "Only non-streaming single completions are supported")
         messages = body.get("messages")
         if (
@@ -373,7 +497,7 @@ def create_app(
             or not messages
             or any(not isinstance(message, dict) for message in messages)
         ):
-            attempt.failed = True
+            attempt.invalid_callback = True
             return _error(400, "A non-empty list of message objects is required")
         token_limits = [attempt.max_output_tokens]
         for name in ("max_tokens", "max_completion_tokens"):
@@ -381,7 +505,7 @@ def create_app(
             if value is None:
                 continue
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                attempt.failed = True
+                attempt.invalid_callback = True
                 return _error(400, "Completion token limits must be positive integers")
             token_limits.append(value)
         forwarded = deepcopy(body)
@@ -400,6 +524,10 @@ def create_app(
             }
             for message in forwarded["messages"]
         ]
+        if not attempt.first_callback_seen:
+            for metrics in (window, total):
+                metrics.observe(callback_received_at - attempt.received_at)
+            attempt.first_callback_seen = True
         upstream = asyncio.create_task(
             model_client.post(
                 f"{attempt.proxy_url}/chat/completions",
@@ -455,17 +583,22 @@ def create_app(
 def main() -> None:
     import uvicorn
 
+    logging.basicConfig()
+    logger.setLevel(logging.INFO)
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gym-url", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--episode-timeout", type=float, default=3600)
+    parser.add_argument("--metrics-idle-reset-seconds", type=float, default=900)
     args = parser.parse_args()
     app = create_app(
         args.gym_url,
         concurrency=args.concurrency,
         episode_timeout=args.episode_timeout,
+        metrics_idle_reset_seconds=args.metrics_idle_reset_seconds,
     )
     uvicorn.run(app, host=args.host, port=args.port, workers=1, access_log=False)
 

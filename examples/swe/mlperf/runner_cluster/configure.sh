@@ -130,6 +130,7 @@ if [[ $SWE_SERVICE == standalone ]]; then
 else
     generator_args+=(
         --gym-port "${SWE_GYM_PORT:-8083}"
+        --metrics-idle-reset-seconds "${SWE_METRICS_IDLE_RESET_SECONDS:-900}"
         --episode-timeout "${SWE_EPISODE_TIMEOUT:-3600}"
     )
 fi

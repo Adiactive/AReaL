@@ -508,3 +508,35 @@ callbacks across sandbox and training hosts, or an accelerator training update. 
 small real job after deployment and check nonempty proxy exports, evaluator rewards, and
 completed training updates before increasing concurrency. This is an internal AReaL
 integration, not a claim of an MLPerf-compliant submission.
+
+### Bridge health metrics
+
+Poll `GET /health` on the bridge port (default 8080). `total_attempts` counts valid,
+registered episodes since the bridge process started, including queued episodes and
+those that later fail. `active_attempts` and `queued_attempts` are instantaneous. Both
+`total` (process lifetime) and `window` expose the same counters and latency histogram.
+`total_attempts` aliases `total.attempts`. A malformed routed callback, Gym HTTP 5xx, or
+an unusable Gym result (invalid JSON, missing/inconsistent grade, or incomplete
+trajectory) counts once in `sandbox_failures`, excluding observed caller cancellations
+and model callback failures. A completed unsuccessful patch is a usable result.
+`finished_without_callback` is the subset of sandbox failures before the first valid
+callback. If the bridge loses its connection to Gym or times out waiting for a reply,
+both `sandbox_failures` and `unknown_outcomes` increase: the runner failed to deliver a
+result, and the final state of the Gym job is unknown. The same caller-cancellation and
+model-error exclusions apply. The counters can overlap.
+
+`window.first_llm_request_seconds` measures time on the bridge's monotonic clock from
+entry into the episode handler to receipt of the first model callback accepted for
+forwarding. It includes bridge queueing and runner startup. Each attempt contributes at
+most one observation. Min/max are exact, p50/p99 are nearest-rank estimates rounded up
+to one-second bins and capped at the observed maximum. Empty windows have count zero and
+null latency values. The cumulative histogram reports counts at or below 5, 15, 30, 60,
+120 and 300 seconds. Subtract the 300-second count from the total observation count to
+find the long tail.
+
+Window counters reset together after 900 continuous seconds with no registered attempts,
+including queued and draining attempts. Set `SWE_METRICS_IDLE_RESET_SECONDS` in
+`configure.env` and regenerate the site configuration to change this interval. The next
+health read or registration logs the outgoing `window` as a JSON object on an INFO line
+tagged `metrics_window_reset`, then clears it. Health polling does not extend the
+window. A bridge process restart clears all counters.

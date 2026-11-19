@@ -130,3 +130,12 @@ def test_configure_service_only_preserves_legacy_metadata(tmp_path, extra_args):
     else:
         assert result.returncode == 0, result.stderr
         assert "swe_runner" not in json.loads(output.read_text())
+
+
+def test_metrics_idle_reset_interval_saved(generate_config):
+    result, output = generate_config("SWE_METRICS_IDLE_RESET_SECONDS=120\n")
+    assert result.returncode == 0, result.stderr
+    assert (
+        json.loads(output.read_text())["swe_runner"]["metrics_idle_reset_seconds"]
+        == 120
+    )
