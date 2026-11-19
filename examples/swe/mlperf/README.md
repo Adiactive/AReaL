@@ -516,19 +516,19 @@ the head. One head and three connected workers report 4. The bridge refreshes me
 in the background every five seconds. Before the first successful query or after a query
 error, the value is null. Standalone mode reports one local runner.
 
-Poll `GET /health` on the bridge port (default 8080). `total_attempts` counts valid,
+Poll `GET /health` on the bridge port (default 8080). `total.attempts` counts valid,
 registered episodes since the bridge process started, including queued episodes and
 those that later fail. `active_attempts` and `queued_attempts` are instantaneous. Both
 `total` (process lifetime) and `window` expose the same counters and latency histogram.
-`total_attempts` aliases `total.attempts`. A malformed routed callback, Gym HTTP 5xx, or
-an unusable Gym result (invalid JSON, missing/inconsistent grade, or incomplete
-trajectory) counts once in `sandbox_failures`, excluding observed caller cancellations
-and model callback failures. A completed unsuccessful patch is a usable result.
-`finished_without_callback` is the subset of sandbox failures before the first valid
-callback. If the bridge loses its connection to Gym or times out waiting for a reply,
-both `sandbox_failures` and `unknown_outcomes` increase: the runner failed to deliver a
-result, and the final state of the Gym job is unknown. The same caller-cancellation and
-model-error exclusions apply. The counters can overlap.
+A malformed routed callback, Gym HTTP 5xx, or an unusable Gym result (invalid JSON,
+missing/inconsistent grade, or incomplete trajectory) counts once in `sandbox_failures`,
+excluding observed caller cancellations and model callback failures. A completed
+unsuccessful patch is a usable result. `finished_without_callback` is the subset of
+sandbox failures before the first valid callback. If the bridge loses its connection to
+Gym or times out waiting for a reply, both `sandbox_failures` and `unknown_outcomes`
+increase: the runner failed to deliver a result, and the final state of the Gym job is
+unknown. The same caller-cancellation and model-error exclusions apply. The counters can
+overlap.
 
 `window.first_llm_request_seconds` measures time on the bridge's monotonic clock from
 entry into the episode handler to receipt of the first model callback accepted for
