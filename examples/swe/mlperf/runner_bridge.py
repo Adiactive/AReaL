@@ -401,7 +401,6 @@ def create_app(
                 "running_runners": running_runners if ray_head_address else 1,
                 "queued_attempts": sum(not a.started for a in attempts.values()),
                 "concurrency": concurrency,
-                "total_attempts": total.attempts,
                 "total": total.snapshot(),
                 "window": window_snapshot(),
             },

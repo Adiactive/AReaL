@@ -950,7 +950,8 @@ async def test_health_window_tracks_queue_first_callback_and_idle_reset(
                 await client.post("/v1/chat/completions", json=_chat(token))
             ).status_code == 200
         current = await health()
-        assert current["total_attempts"] == 2
+        assert "total_attempts" not in current
+        assert current["total"]["attempts"] == 2
         window = current["window"]
         assert window["attempts"] == 2
         assert window["finished_without_callback"] == 1
@@ -969,7 +970,7 @@ async def test_health_window_tracks_queue_first_callback_and_idle_reset(
         third = asyncio.create_task(submit())
         await asyncio.wait_for(started.get(), 2)
         current = await health()
-        assert current["total_attempts"] == 3
+        assert current["total"]["attempts"] == 3
         assert current["window"]["attempts"] == 1
         assert current["window"]["first_llm_request_seconds"]["p99"] is None
         releases[2].set()
@@ -978,7 +979,7 @@ async def test_health_window_tracks_queue_first_callback_and_idle_reset(
         now += 60
         current = await health()
         assert current["window"]["attempts"] == 0
-        assert current["total_attempts"] == current["total"]["attempts"] == 3
+        assert current["total"]["attempts"] == 3
         assert current["total"]["first_llm_request_seconds"] == timing
         assert current["total"]["finished_without_callback"] == 2
         assert current["window"]["sandbox_failures"] == 0
