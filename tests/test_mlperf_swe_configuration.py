@@ -102,6 +102,7 @@ def test_serve_episode_timeout_precedence_reaches_bridge(
 ):
     """The actual bridge command receives the CLI, config, or legacy timeout."""
     config = configure(_runner_config(), 8080, 8083)
+    config["ray_head_node_address"] = "192.0.2.10:6379"
     if runner_settings is not None:
         config["swe_runner"] = runner_settings
     path = tmp_path / "site.yaml"
@@ -125,6 +126,7 @@ def test_serve_episode_timeout_precedence_reaches_bridge(
 
     assert launch.call_count == 2
     command = launch.call_args_list[1].args[0]
+    assert command[command.index("--ray-head-address") + 1] == "192.0.2.10:6379"
     assert Path(command[1]).name == "runner_bridge.py"
     assert float(command[command.index("--episode-timeout") + 1]) == expected
 

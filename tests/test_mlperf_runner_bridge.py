@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import socket
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -898,7 +899,9 @@ async def test_invalid_completion_token_limit_poisons_episode(name, value):
 async def test_health_window_tracks_queue_first_callback_and_idle_reset(
     monkeypatch, caplog
 ):
-    caplog.set_level("INFO", logger=runner_bridge.logger.name)
+    capture_logger = logging.Logger("MLPerfRunnerBridge", level=logging.INFO)
+    capture_logger.addHandler(caplog.handler)
+    monkeypatch.setattr(runner_bridge, "logger", capture_logger)
     now = 0.0
     monkeypatch.setattr(runner_bridge, "monotonic", lambda: now)
     started = asyncio.Queue()
@@ -1039,3 +1042,27 @@ async def test_health_terminal_cause(case, failures, before, unknown):
         assert metrics["sandbox_failures"] == failures
         assert metrics["finished_without_callback"] == before
         assert metrics["unknown_outcomes"] == unknown
+
+
+@pytest.mark.asyncio
+async def test_health_refreshes_live_runner_membership(monkeypatch):
+    address = "192.0.2.10:6379"
+    membership = 4
+
+    def probe(head):
+        assert head == address
+        if membership is None:
+            raise ConnectionError
+        return membership
+
+    monkeypatch.setattr(runner_bridge, "_MEMBERSHIP_REFRESH_SECONDS", 0.01)
+    monkeypatch.setattr(runner_bridge, "_live_ray_nodes", probe)
+    async with _bridge(None, None, ray_head_address=address) as client:
+        for membership in (4, 3, None, 2):
+            async with asyncio.timeout(2):
+                while (await client.get("/health")).json()[
+                    "running_runners"
+                ] != membership:
+                    await asyncio.sleep(0.01)
+    async with _bridge(None, None) as client:
+        assert (await client.get("/health")).json()["running_runners"] == 1

@@ -511,6 +511,11 @@ integration, not a claim of an MLPerf-compliant submission.
 
 ### Bridge health metrics
 
+The top-level `running_runners` field counts live Ray nodes (active and idle), including
+the head. One head and three connected workers report 4. The bridge refreshes membership
+in the background every five seconds. Before the first successful query or after a query
+error, the value is null. Standalone mode reports one local runner.
+
 Poll `GET /health` on the bridge port (default 8080). `total_attempts` counts valid,
 registered episodes since the bridge process started, including queued episodes and
 those that later fail. `active_attempts` and `queued_attempts` are instantaneous. Both
