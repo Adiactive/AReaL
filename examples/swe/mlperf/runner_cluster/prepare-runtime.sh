@@ -194,6 +194,7 @@ SETUP_DIR="${openhands_setup}" \
     SWE_POETRY_MARKER_FIX="${script_dir}/patch-poetry-markers.py" \
     SWE_BUILD_PROVENANCE_DIR="${provenance_dir}" \
     bash "${swe_dir}/setup_scripts/openhands.sh"
+git -C "${openhands_setup}/OpenHands" apply "${script_dir}/runtime-exit.patch"
 
 # OpenHands' lock has its own Gym dependency. Install a wheel from this exact
 # prepared checkout: an editable install would point outside the OpenHands tree
