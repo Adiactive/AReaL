@@ -140,6 +140,11 @@ def main() -> None:
                     str(episode_timeout),
                     "--metrics-idle-reset-seconds",
                     str(metrics_idle_reset_seconds),
+                    *(
+                        ["--ray-head-address", config["ray_head_node_address"]]
+                        if config.get("ray_head_node_address")
+                        else []
+                    ),
                 ],
                 start_new_session=True,
             )

@@ -29,6 +29,8 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("MLPerfRunnerBridge")
 
+_MEMBERSHIP_REFRESH_SECONDS = 5
+
 
 @dataclass
 class _Attempt:
@@ -178,10 +180,18 @@ async def _body(request: Request) -> dict[str, Any]:
     return body
 
 
+def _live_ray_nodes(address: str) -> int:
+    from ray.autoscaler.v2.sdk import get_cluster_status
+
+    status = get_cluster_status(address, timeout=2)
+    return len(status.active_nodes) + len(status.idle_nodes)
+
+
 def create_app(
     gym_url: str,
     *,
     concurrency: int = 4,
+    ray_head_address: str | None = None,
     episode_timeout: float = 3600,
     metrics_idle_reset_seconds: float = 900,
     gym_client: httpx.AsyncClient | None = None,
@@ -239,9 +249,30 @@ def create_app(
         attempt.cancelled.set()
         revoke(attempt)
 
+    running_runners = None
+
+    async def refresh_membership(address: str) -> None:
+        nonlocal running_runners
+        while True:
+            try:
+                running_runners = await asyncio.to_thread(_live_ray_nodes, address)
+            except Exception:
+                running_runners = None
+            await asyncio.sleep(_MEMBERSHIP_REFRESH_SECONDS)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        yield
+        monitor = (
+            asyncio.create_task(refresh_membership(ray_head_address))
+            if ray_head_address
+            else None
+        )
+        try:
+            yield
+        finally:
+            if monitor is not None:
+                monitor.cancel()
+                await asyncio.gather(monitor, return_exceptions=True)
         # Shutdown cannot prove that remote Ray jobs stopped. Restart only after
         # the operator has reconciled outstanding jobs on the sandbox host.
         for attempt in tuple(attempts.values()):
@@ -367,6 +398,7 @@ def create_app(
             {
                 "status": "unavailable" if admission_closed else "ok",
                 "active_attempts": sum(a.started for a in attempts.values()),
+                "running_runners": running_runners if ray_head_address else 1,
                 "queued_attempts": sum(not a.started for a in attempts.values()),
                 "concurrency": concurrency,
                 "total_attempts": total.attempts,
@@ -588,6 +620,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gym-url", required=True)
+    parser.add_argument("--ray-head-address")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--concurrency", type=int, default=4)
@@ -596,6 +629,7 @@ def main() -> None:
     args = parser.parse_args()
     app = create_app(
         args.gym_url,
+        ray_head_address=args.ray_head_address,
         concurrency=args.concurrency,
         episode_timeout=args.episode_timeout,
         metrics_idle_reset_seconds=args.metrics_idle_reset_seconds,
