@@ -1,0 +1,96 @@
+--- a/openhands/runtime/impl/local/local_runtime.py
++++ b/openhands/runtime/impl/local/local_runtime.py
+@@ -2,10 +2,12 @@
+ 
+ import os
+ import shutil
++import socket
+ import subprocess
+ import sys
+ import tempfile
+ import threading
++from collections import deque
+ from dataclasses import dataclass
+ from typing import Callable
+ from urllib.parse import urlparse
+@@ -44,6 +46,17 @@
+ from openhands.utils.async_utils import call_sync_from_async
+ from openhands.utils.http_session import httpx_verify_option
+ from openhands.utils.tenacity_stop import stop_if_should_exit
++
++
++class ServerLogThread(threading.Thread):
++    def __init__(self, **kwargs):
++        super().__init__(**kwargs)
++        self.startup_tail = deque(maxlen=24)
++        self.startup_complete = threading.Event()
++
++    def record(self, line: str) -> None:
++        if not self.startup_complete.is_set():
++            self.startup_tail.append(line.rstrip()[-512:])
+ 
+ 
+ @dataclass
+@@ -422,11 +435,29 @@
+     def _wait_until_alive(self) -> bool:
+         """Wait until the server is ready to accept requests."""
+         if self.server_process and self.server_process.poll() is not None:
++            reader = getattr(self, '_log_thread', None)
++            if not getattr(self, '_reported_startup_exit', False):
++                self._reported_startup_exit = True
++                tail = ''
++                if isinstance(reader, ServerLogThread):
++                    # The child exited but its final traceback may still be in the pipe.
++                    reader.join(timeout=0.5)
++                    tail = '\n'.join(reader.startup_tail.copy())
++                self.log('error', (
++                    f'Runtime server exited before /alive: host={socket.gethostname()} '
++                    f'sid={self.sid} pid={self.server_process.pid} '
++                    f'port={self._execution_server_port} returncode={self.server_process.returncode} '
++                    f'child output tail:\n{tail or "<no child output captured>"}'
++                ))
+             raise RuntimeError('Server process died')
+ 
+         try:
+             response = self.session.get(f'{self.api_url}/alive')
+             response.raise_for_status()
++            reader = getattr(self, '_log_thread', None)
++            if isinstance(reader, ServerLogThread):
++                reader.startup_complete.set()
++                reader.startup_tail.clear()
+             return True
+         except Exception as e:
+             self.log('debug', f'Server not ready yet: {e}')
+@@ -695,6 +726,7 @@
+         stdout=subprocess.PIPE,
+         stderr=subprocess.STDOUT,
+         universal_newlines=True,
++        errors="replace",
+         bufsize=1,
+         env=env,
+         cwd=code_repo_path,
+@@ -719,6 +751,7 @@
+                 if not line:
+                     break
+ 
++                log_thread.record(line)
+                 if ng_openhands_should_log:
+                     logger.info(f'server: {line.strip()}')
+ 
+@@ -728,6 +761,7 @@
+                 for line in server_process.stdout:
+                     if log_thread_exit_event.is_set():
+                         break
++                    log_thread.record(line)
+                     if ng_openhands_should_log:
+                         logger.info(f'server (remaining): {line.strip()}')
+ 
+@@ -736,7 +770,7 @@
+         finally:
+             logger.info('server log output thread finished.')
+ 
+-    log_thread = threading.Thread(target=log_output, daemon=True)
++    log_thread = ServerLogThread(target=log_output, daemon=True)
+     log_thread.start()
+ 
+     # Create server info object

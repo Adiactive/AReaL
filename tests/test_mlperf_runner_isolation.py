@@ -125,6 +125,13 @@ def test_build_context_contains_patch_before_runtime_preparation(tmp_path, monke
         < preparation.index(f'python3 "${{script_dir}}/{PATCH_PATH.name}"')
         < preparation.index("uv build ")
     )
+    assert (context / "runner/runtime-exit.patch").read_bytes() == (
+        RUNNER_DIR / "runtime-exit.patch"
+    ).read_bytes()
+    assert "runner/runtime-exit.patch" in dockerfile
+    assert preparation.index('bash "${swe_dir}/setup_scripts/openhands.sh"') < (
+        preparation.index('apply "${script_dir}/runtime-exit.patch"')
+    )
     source = tmp_path / "app.py"
     source.write_text(GYM_SOURCE)
     subprocess.run([sys.executable, str(helper), str(source)], check=True)
