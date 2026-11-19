@@ -85,6 +85,15 @@ def main() -> None:
         or not math.isfinite(episode_timeout)
     ):
         raise ValueError("Episode timeout must be a positive finite number of seconds")
+    metrics_idle_reset_seconds = config.get("swe_runner", {}).get(
+        "metrics_idle_reset_seconds", 900
+    )
+    if (
+        type(metrics_idle_reset_seconds) not in (float, int)
+        or not math.isfinite(metrics_idle_reset_seconds)
+        or metrics_idle_reset_seconds <= 0
+    ):
+        raise ValueError("Metrics idle reset seconds must be positive and finite")
     processes = []
 
     def shutdown(signum, frame):
@@ -129,6 +138,8 @@ def main() -> None:
                     str(concurrency),
                     "--episode-timeout",
                     str(episode_timeout),
+                    "--metrics-idle-reset-seconds",
+                    str(metrics_idle_reset_seconds),
                 ],
                 start_new_session=True,
             )

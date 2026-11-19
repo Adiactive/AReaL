@@ -892,3 +892,150 @@ async def test_invalid_completion_token_limit_poisons_episode(name, value):
     async with _bridge(gym, model) as client:
         response = await client.post("/run", headers=_headers(), json=_row())
     assert response.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_health_window_tracks_queue_first_callback_and_idle_reset(
+    monkeypatch, caplog
+):
+    caplog.set_level("INFO", logger=runner_bridge.logger.name)
+    now = 0.0
+    monkeypatch.setattr(runner_bridge, "monotonic", lambda: now)
+    started = asyncio.Queue()
+    releases = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
+    calls = 0
+
+    async def gym(request):
+        nonlocal calls
+        index = calls
+        calls += 1
+        await started.put(
+            json.loads(request.content)["responses_create_params"]["model"]
+        )
+        await releases[index].wait()
+        return httpx.Response(200, json={"reward": 0})
+
+    async with _bridge(
+        gym,
+        lambda _: httpx.Response(200, json=_completion()),
+        concurrency=1,
+        metrics_idle_reset_seconds=60,
+    ) as client:
+
+        async def health():
+            return (await client.get("/health")).json()
+
+        async def submit():
+            return await client.post("/run", headers=_headers(), json=_row())
+
+        first = asyncio.create_task(submit())
+        await asyncio.wait_for(started.get(), 2)
+        now = 3
+        second = asyncio.create_task(submit())
+        async with asyncio.timeout(2):
+            while not (await health())["queued_attempts"]:
+                await asyncio.sleep(0)
+        now = 100
+        releases[0].set()
+        assert (await first).status_code == 200
+        token = await asyncio.wait_for(started.get(), 2)
+        assert (
+            await client.post("/v1/chat/completions", json=_chat("expired"))
+        ).status_code == 404
+        for _ in range(2):
+            assert (
+                await client.post("/v1/chat/completions", json=_chat(token))
+            ).status_code == 200
+        current = await health()
+        assert current["total_attempts"] == 2
+        window = current["window"]
+        assert window["attempts"] == 2
+        assert window["finished_without_callback"] == 1
+        timing = window["first_llm_request_seconds"]
+        assert timing["count"] == 1
+        assert [timing[k] for k in ("min", "max", "p50", "p99")] == [97] * 4
+        assert timing["cumulative_buckets"]["60"] == 0
+        assert timing["cumulative_buckets"]["120"] == 1
+        releases[1].set()
+        await second
+        now = 159
+        first_window = (await health())["window"]
+        assert first_window["attempts"] == 2
+        # Start the next burst without a health poll at the expiry boundary.
+        now = 160
+        third = asyncio.create_task(submit())
+        await asyncio.wait_for(started.get(), 2)
+        current = await health()
+        assert current["total_attempts"] == 3
+        assert current["window"]["attempts"] == 1
+        assert current["window"]["first_llm_request_seconds"]["p99"] is None
+        releases[2].set()
+        await third
+        second_window = (await health())["window"]
+        now += 60
+        current = await health()
+        assert current["window"]["attempts"] == 0
+        assert current["total_attempts"] == current["total"]["attempts"] == 3
+        assert current["total"]["first_llm_request_seconds"] == timing
+        assert current["total"]["finished_without_callback"] == 2
+        assert current["window"]["sandbox_failures"] == 0
+        await health()
+        prefix = "metrics_window_reset "
+        snapshots = [
+            json.loads(record.getMessage().removeprefix(prefix))
+            for record in caplog.records
+            if record.getMessage().startswith(prefix)
+        ]
+        assert snapshots == [first_window, second_window]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case, failures, before, unknown",
+    [
+        ("startup", 1, 1, 0),
+        ("grading", 1, 0, 0),
+        ("failed_tests", 0, 0, 0),
+        ("model_error", 0, 0, 0),
+        ("cancel", 0, 0, 0),
+        ("disconnect", 1, 1, 1),
+        ("timeout_after_callback", 1, 0, 1),
+        ("disconnect_after_model_error", 0, 0, 0),
+    ],
+)
+async def test_health_terminal_cause(case, failures, before, unknown):
+    headers = _headers()
+
+    async def gym(req):
+        if case == "disconnect":
+            raise httpx.ConnectError("disconnected")
+        if case == "cancel":
+            await client.delete(
+                "/attempts/" + headers["X-AReaL-Attempt-Id"], headers=headers
+            )
+        if case not in {"startup", "cancel"}:
+            token = json.loads(req.content)["responses_create_params"]["model"]
+            await client.post("/v1/chat/completions", json=_chat(token))
+        if case == "timeout_after_callback":
+            raise httpx.ReadTimeout("Gym did not reply")
+        if case == "disconnect_after_model_error":
+            raise httpx.ReadError("Gym disconnected")
+        if case in {"startup", "grading", "model_error"}:
+            return httpx.Response(500)
+        return httpx.Response(
+            200, json={"reward": 0, "resolved": False, "response": {"output": [{}]}}
+        )
+
+    def model(req):
+        if case in {"model_error", "disconnect_after_model_error"}:
+            return httpx.Response(503)
+        return httpx.Response(200, json=_completion())
+
+    async with _bridge(gym, model) as client:
+        await client.post("/run", headers=headers, json=_row())
+        health = (await client.get("/health")).json()
+    for scope in ("total", "window"):
+        metrics = health[scope]
+        assert metrics["sandbox_failures"] == failures
+        assert metrics["finished_without_callback"] == before
+        assert metrics["unknown_outcomes"] == unknown

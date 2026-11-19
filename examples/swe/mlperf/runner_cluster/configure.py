@@ -296,6 +296,9 @@ def build_config(args: argparse.Namespace) -> dict:
             if value is not None:
                 config["swe_runner"][key] = value
         if args.service == "areal":
+            config["swe_runner"]["metrics_idle_reset_seconds"] = (
+                args.metrics_idle_reset_seconds or 900
+            )
             config["swe_runner"]["episode_timeout"] = (
                 args.episode_timeout if args.episode_timeout is not None else 3600
             )
@@ -414,6 +417,7 @@ def parse_args() -> argparse.Namespace:
         type=positive_float,
         help="saved AReaL bridge Gym request deadline in seconds (default: 3600); requires host launch paths",
     )
+    parser.add_argument("--metrics-idle-reset-seconds", type=positive_float)
     parser.add_argument("--test-timeout", type=positive_int, default=60)
     parser.add_argument("--command-timeout", type=positive_int, default=60)
     parser.add_argument("--memory-limit-mb", type=positive_int, default=32768)
@@ -459,6 +463,7 @@ def parse_args() -> argparse.Namespace:
             args.runtime_env_file,
             args.launch_dry_run,
             args.episode_timeout,
+            args.metrics_idle_reset_seconds,
         )
     ):
         if not all(value is not None for value in host_paths):
