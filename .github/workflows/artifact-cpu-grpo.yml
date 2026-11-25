@@ -6,6 +6,17 @@ name: Nightly artifact CPU - grpo
 permissions:
   contents: read
 jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+    - run: "for suite in grpo sft; do\n  mkdir -p \"fixture/$suite\"\n  echo '[{\"\
+        epoch\":1,\"number\":1,\"epoch_end\":true,\"hours\":1,\"metrics\":{\"rollout/reward\"\
+        :2,\"sft/loss/avg\":2,\"timeperf/train_step\":1}}]' > \"fixture/$suite/metrics.json\"\
+        \ndone"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ascend-nightly-grpo
+        path: fixture/grpo/metrics.json
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -26,10 +37,6 @@ jobs:
         \ grpo sft\ngit -C \"$RUNNER_TEMP/seed\" commit -m baseline\ngit -C \"$RUNNER_TEMP/seed\"\
         \ push origin HEAD:ascend-nightly-results\necho \"BASELINE=$(git -C \"$RUNNER_TEMP/seed\"\
         \ rev-parse HEAD)\" >> \"$GITHUB_ENV\""
-    - uses: actions/upload-artifact@v7
-      with:
-        name: ascend-nightly-grpo
-        path: fixture/grpo/metrics.json
     - uses: actions/download-artifact@v5
       with:
         pattern: ascend-nightly-grpo
@@ -53,3 +60,4 @@ jobs:
         \ ${suite^^}\" \"$GITHUB_STEP_SUMMARY\"\n  fi\ndone\nif [[ -z \"$SUCCESSFUL\"\
         \ ]]; then\n  test \"$(git --git-dir=\"$RUNNER_TEMP/remote\" rev-parse ascend-nightly-results)\"\
         \ = \"$BASELINE\"\nfi"
+    needs: upload
