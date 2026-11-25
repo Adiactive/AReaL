@@ -1,0 +1,55 @@
+name: Nightly artifact CPU - sft
+'on':
+  push:
+    branches:
+    - test/nightly-artifact-cpu
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Seed isolated results branch
+      run: "set -eu\ngit config --global user.name fixture\ngit config --global user.email\
+        \ fixture@example.com\ngit init --bare \"$RUNNER_TEMP/remote\"\ngit remote\
+        \ set-url origin \"$RUNNER_TEMP/remote\"\nbash scripts/ascend_nightly_state.sh\
+        \ prepare \"$RUNNER_TEMP/seed\"\nfor suite in grpo sft; do\n  mkdir -p \"\
+        $RUNNER_TEMP/seed/$suite\" \"fixture/$suite\"\n  echo '[{\"epoch\":1,\"number\"\
+        :1,\"epoch_end\":true,\"hours\":1,\"metrics\":{\"rollout/reward\":1,\"sft/loss/avg\"\
+        :1,\"timeperf/train_step\":1}}]' > \"$RUNNER_TEMP/seed/$suite/metrics.json\"\
+        \n  echo '[{\"epoch\":1,\"number\":1,\"epoch_end\":true,\"hours\":1,\"metrics\"\
+        :{\"rollout/reward\":2,\"sft/loss/avg\":2,\"timeperf/train_step\":1}}]' >\
+        \ \"fixture/$suite/metrics.json\"\ndone\ngit -C \"$RUNNER_TEMP/seed\" add\
+        \ grpo sft\ngit -C \"$RUNNER_TEMP/seed\" commit -m baseline\ngit -C \"$RUNNER_TEMP/seed\"\
+        \ push origin HEAD:ascend-nightly-results\necho \"BASELINE=$(git -C \"$RUNNER_TEMP/seed\"\
+        \ rev-parse HEAD)\" >> \"$GITHUB_ENV\""
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ascend-nightly-sft
+        path: fixture/sft/metrics.json
+    - uses: actions/download-artifact@v5
+      with:
+        pattern: ascend-nightly-grpo
+        path: artifacts/ascend-nightly-grpo
+    - uses: actions/download-artifact@v5
+      with:
+        pattern: ascend-nightly-sft
+        path: artifacts/ascend-nightly-sft
+    - run: python -m pip install matplotlib
+    - name: Publish and verify both stored baselines
+      env:
+        SUCCESSFUL: sft
+      run: "set -euo pipefail\nbash scripts/ascend_nightly_state.sh publish \"$RUNNER_TEMP/results\"\
+        \nfor suite in grpo sft; do\n  git --git-dir=\"$RUNNER_TEMP/remote\" show\
+        \ \"ascend-nightly-results:$suite/metrics.json\" > actual\n  if [[ \" $SUCCESSFUL\
+        \ \" == *\" $suite \"* ]]; then\n    cmp actual \"fixture/$suite/metrics.json\"\
+        \n    test -s \"nightly-reports/$suite.md\"\n    test -s \"nightly-reports/$suite/quality.png\"\
+        \n    grep -q \"$suite/quality.png\" \"$GITHUB_STEP_SUMMARY\"\n  else\n  \
+        \  cmp actual \"$RUNNER_TEMP/seed/$suite/metrics.json\"\n    test ! -e \"\
+        nightly-reports/$suite.md\"\n    grep -q \"No verified metrics available for\
+        \ ${suite^^}\" \"$GITHUB_STEP_SUMMARY\"\n  fi\ndone\nif [[ -z \"$SUCCESSFUL\"\
+        \ ]]; then\n  test \"$(git --git-dir=\"$RUNNER_TEMP/remote\" rev-parse ascend-nightly-results)\"\
+        \ = \"$BASELINE\"\nfi"
