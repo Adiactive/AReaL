@@ -43,7 +43,7 @@
 +                    # The child exited but its final traceback may still be in the pipe.
 +                    reader.join(timeout=0.5)
 +                    tail = '\n'.join(reader.startup_tail.copy())
-+                self.log('error', (
++                self.log('critical', (
 +                    f'Runtime server exited before /alive: host={socket.gethostname()} '
 +                    f'sid={self.sid} pid={self.server_process.pid} '
 +                    f'port={self._execution_server_port} returncode={self.server_process.returncode} '
